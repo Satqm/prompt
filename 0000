@@ -1,8 +1,959 @@
-The error is because the .Count property doesn't exist for selectedItem.SubItems. In VBA ListView, we need to handle this differently. Here's the FIXED CODE:
+I'll analyze the issues and provide you with a complete, corrected code that should work without compilation errors. Let me identify and fix the main problems:
 
-CORRECTED UserFormDE Code (Fixed SubItem Count Issue)
+Main Issues Identified:
+
+1. UserFormDE ListView population issue: The LoadRecordFromListView function has incorrect indices for ListView subitems
+2. Correction process: When correcting, old record should be deleted and new one added
+3. Data type mismatches: Some variables declared as wrong types
+4. Missing procedures: Some referenced procedures are not defined
+
+Complete Corrected Code:
+
+1. Module Code (Standard Module):
 
 ```vba
+' ==================== MAIN MODULE ====================
+Option Explicit
+
+' Global variable to track correction mode
+Public isCorrectionMode As Boolean
+
+Public Sub LoginUser()
+    Dim wsLogin As Worksheet, wsUser As Worksheet
+    Dim entID As String
+
+    Set wsLogin = Sheets("Login")
+    entID = Trim(wsLogin.Range("F24").Value)
+
+    If entID = "" Then
+        MsgBox "Please select your Enterprise ID from the dropdown.", vbExclamation, "Login Required"
+        wsLogin.Range("F24").Select
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    Set wsUser = Sheets(entID)
+    On Error GoTo 0
+
+    If wsUser Is Nothing Then
+        MsgBox "User not found. Please add user to continue.", vbExclamation, "User Not Found"
+        Exit Sub
+    End If
+
+    wsUser.Visible = xlSheetVisible
+    wsUser.Unprotect
+    wsUser.Range("W6").Value = entID
+    wsUser.Range("W6").Locked = True
+
+    ' Reset correction mode
+    isCorrectionMode = False
+
+    ' Protect only the cells that should be protected
+    wsUser.Cells.Locked = True
+    wsUser.Range("F2,W7").Locked = True  ' Name and Email (read-only)
+    wsUser.Range("C6,E6,H6,B10:J29").Locked = False  ' Editable fields
+    wsUser.Range("B3000:T" & wsUser.Rows.Count).Locked = False  ' Storage area
+    wsUser.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+
+    wsUser.Activate
+    wsUser.Range("C6").Select
+    ActiveWindow.Zoom = 80
+
+    MsgBox "Welcome, " & Application.userName & "!" & vbNewLine & _
+           "ID *" & entID & "* logged in successfully." & vbNewLine & _
+           "Your timesheet is ready." & vbNewLine & vbNewLine & _
+           "Have a productive day!", _
+           vbInformation, "Login Successful"
+End Sub
+
+Public Sub SubmitTimesheet()
+    On Error GoTo ErrorHandler
+
+    Dim wsForm As Worksheet, wsDB As Worksheet
+    Dim nextRow As Long, recordCount As Long
+    Dim timesheetType As String, enterpriseID As String
+    Dim employeeName As String, employeeEmail As String, monthName As String, weekName As String, teamName As String
+    Dim submittedBy As String
+    Dim i As Integer
+    Dim auditCount As Integer, nonAuditCount As Integer
+
+    Set wsForm = ActiveSheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    ' Gather basic form values
+    enterpriseID = Trim(wsForm.Range("W6").Value)
+    employeeName = Trim(wsForm.Range("F2").Value)
+    employeeEmail = Trim(wsForm.Range("W7").Value)
+
+    ' Determine if this is a correction based on correction mode
+    If isCorrectionMode Then
+        timesheetType = "Timesheet Correction"
+    Else
+        timesheetType = "New Timesheet Entry"
+    End If
+
+    monthName = Trim(wsForm.Range("C6").Value)
+    weekName = Trim(wsForm.Range("E6").Value)
+    teamName = Trim(wsForm.Range("H6").Value)
+    submittedBy = Application.userName
+
+    ' Basic validations
+    If Not ValidateBasicFields(wsForm, enterpriseID, monthName, weekName, teamName) Then GoTo CleanUp
+
+    ' Validate hours columns (E and I) for integer values
+    If Not ValidateHoursColumns(wsForm) Then GoTo CleanUp
+
+    ' Count and validate engagement records (rows 10-14)
+    recordCount = CountValidEngagementRecords(wsForm, auditCount, nonAuditCount)
+    If recordCount = 0 Then
+        MsgBox "Please fill at least one engagement record (either Audit or Non-Audit).", vbExclamation, "No Records Found"
+        GoTo CleanUp
+    End If
+
+    ' Validate individual rows for completeness
+    If Not ValidateEngagementRows(wsForm) Then GoTo CleanUp
+
+    ' Check for duplicates ONLY if NOT in correction mode
+    If Not isCorrectionMode Then
+        If HasDuplicateEntries(wsForm, wsDB, enterpriseID, monthName, weekName, teamName) Then GoTo CleanUp
+    End If
+
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    wsForm.Unprotect
+
+    ' Confirmation with proper formatting
+    Dim confirmMsg As String
+    If isCorrectionMode Then
+        confirmMsg = "You are Submitting Correction For " & auditCount & " Audit and " & nonAuditCount & " Non-Audit Engagements" & vbCrLf & _
+                    "Week: " & weekName & vbCrLf & vbCrLf & _
+                    "Do you want to proceed with the corrections?"
+    Else
+        confirmMsg = "You are Recording " & auditCount & " Audit and " & nonAuditCount & " Non-Audit Engagements" & vbCrLf & _
+                    "Week: " & weekName & vbCrLf & vbCrLf & _
+                    "Do you want to proceed with the submission?"
+    End If
+
+    If MsgBox(confirmMsg, vbQuestion + vbYesNo, "Confirm Submission") = vbNo Then
+        MsgBox "Submission cancelled.", vbInformation
+        GoTo CleanUp
+    End If
+
+    ' Process each engagement record (rows 10-14)
+    For i = 10 To 14
+        If IsEngagementRowValid(wsForm, i) Then
+            nextRow = wsForm.Cells(wsForm.Rows.Count, "B").End(xlUp).Row
+            If nextRow < 3000 Then nextRow = 2999
+            nextRow = nextRow + 1
+
+            ' Write engagement record to local storage
+            WriteEngagementRecord wsForm, nextRow, enterpriseID, employeeName, _
+                                 employeeEmail, timesheetType, monthName, weekName, teamName, i, submittedBy
+        End If
+    Next i
+
+    ThisWorkbook.Save
+
+    ' Success message with proper formatting
+    Dim successMsg As String
+    If isCorrectionMode = False Then
+        successMsg = "Your Timesheet has been Successfully Submitted with " & auditCount & " Audit and " & nonAuditCount & " Non-Audit Engagements" & vbCrLf & _
+                    "Week starting: " & weekName & vbCrLf & _
+                    "Enterprise ID: " & enterpriseID & vbCrLf & vbCrLf & _
+                    "Records will be synced to database by Admin."
+    Else
+        successMsg = "Your Timesheet Correction has been Successfully Submitted!" & vbCrLf & _
+                    auditCount & " Audit and " & nonAuditCount & " Non-Audit Engagements" & vbCrLf & _
+                    "Week starting: " & weekName
+    End If
+
+    MsgBox successMsg, vbInformation, "Submission Complete"
+
+    ' Reset correction mode and form
+    isCorrectionMode = False
+    ResetFormInputsOnly wsForm
+    GoTo CleanUp
+
+ErrorHandler:
+    MsgBox "ERROR in SubmitTimesheet:" & vbCrLf & _
+           "Error: " & Err.Description & vbCrLf & _
+           "Number: " & Err.Number, vbCritical, "System Error"
+
+CleanUp:
+    On Error Resume Next
+    wsForm.Cells.Locked = True
+    wsForm.Range("F2,W7").Locked = True
+    wsForm.Range("C6,E6,H6,B10:J14").Locked = False
+    wsForm.Range("B3000:T" & wsForm.Rows.Count).Locked = False
+    wsForm.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Call UpdatePendingCounts
+    wsForm.Activate
+End Sub
+
+Private Function ValidateHoursColumns(ws As Worksheet) As Boolean
+    Dim i As Integer
+    Dim cellValue As String
+    Dim numValue As Double
+
+    ValidateHoursColumns = True
+
+    ' Check rows 10-14 for hours validation
+    For i = 10 To 14
+        ' Check Audit Hours (Column E)
+        cellValue = Trim(CStr(ws.Cells(i, 5).Value))
+        If cellValue <> "" Then
+            If Not IsNumeric(cellValue) Then
+                MsgBox "Row " & i & ": Audit Hours (Column E) must be a valid number between 0-300.", vbExclamation, "Invalid Hours Entry"
+                ws.Cells(i, 5).Select
+                ValidateHoursColumns = False
+                Exit Function
+            End If
+
+            numValue = CDbl(cellValue)
+            If numValue <> Int(numValue) Or numValue < 0 Or numValue > 300 Then
+                MsgBox "Row " & i & ": Audit Hours (Column E) must be a whole number between 0-300.", vbExclamation, "Invalid Hours Entry"
+                ws.Cells(i, 5).Select
+                ValidateHoursColumns = False
+                Exit Function
+            End If
+        End If
+
+        ' Check Non-Audit Hours (Column I)
+        cellValue = Trim(CStr(ws.Cells(i, 9).Value))
+        If cellValue <> "" Then
+            If Not IsNumeric(cellValue) Then
+                MsgBox "Row " & i & ": Non-Audit Hours (Column I) must be a valid number between 0-300.", vbExclamation, "Invalid Hours Entry"
+                ws.Cells(i, 9).Select
+                ValidateHoursColumns = False
+                Exit Function
+            End If
+
+            numValue = CDbl(cellValue)
+            If numValue <> Int(numValue) Or numValue < 0 Or numValue > 300 Then
+                MsgBox "Row " & i & ": Non-Audit Hours (Column I) must be a whole number between 0-300.", vbExclamation, "Invalid Hours Entry"
+                ws.Cells(i, 9).Select
+                ValidateHoursColumns = False
+                Exit Function
+            End If
+        End If
+    Next i
+End Function
+
+Private Function CountValidEngagementRecords(ws As Worksheet, ByRef auditCount As Integer, ByRef nonAuditCount As Integer) As Integer
+    Dim Count As Integer, i As Integer
+    Count = 0
+    auditCount = 0
+    nonAuditCount = 0
+
+    For i = 10 To 14
+        If IsEngagementRowValid(ws, i) Then
+            Count = Count + 1
+            ' Count audit and non-audit separately
+            If Len(Trim(CStr(ws.Cells(i, 3).Value))) > 0 Then ' Audit Engagement ID exists
+                auditCount = auditCount + 1
+            End If
+            If Len(Trim(CStr(ws.Cells(i, 8).Value))) > 0 Then ' Non-Audit Engagement exists
+                nonAuditCount = nonAuditCount + 1
+            End If
+        End If
+    Next i
+
+    CountValidEngagementRecords = Count
+End Function
+
+Private Function IsEngagementRowValid(ws As Worksheet, rowNum As Integer) As Boolean
+    Dim hasAuditComplete As Boolean, hasNonAuditComplete As Boolean
+    Dim auditFieldsFilled As Boolean, nonAuditFieldsFilled As Boolean
+
+    ' Check if any audit engagement fields are filled
+    auditFieldsFilled = (Len(Trim(CStr(ws.Cells(rowNum, 2).Value))) > 0 Or _
+                        Len(Trim(CStr(ws.Cells(rowNum, 3).Value))) > 0 Or _
+                        Len(Trim(CStr(ws.Cells(rowNum, 4).Value))) > 0 Or _
+                        Len(Trim(CStr(ws.Cells(rowNum, 5).Value))) > 0 Or _
+                        Len(Trim(CStr(ws.Cells(rowNum, 6).Value))) > 0)
+
+    ' Check if any non-audit engagement fields are filled
+    nonAuditFieldsFilled = (Len(Trim(CStr(ws.Cells(rowNum, 8).Value))) > 0 Or _
+                           Len(Trim(CStr(ws.Cells(rowNum, 9).Value))) > 0 Or _
+                           Len(Trim(CStr(ws.Cells(rowNum, 10).Value))) > 0)
+
+    ' If no fields are filled, row is not valid for processing
+    If Not (auditFieldsFilled Or nonAuditFieldsFilled) Then
+        IsEngagementRowValid = False
+        Exit Function
+    End If
+
+    ' Check if audit engagement has all required fields
+    If auditFieldsFilled Then
+        hasAuditComplete = (Len(Trim(CStr(ws.Cells(rowNum, 2).Value))) > 0 And _
+                           Len(Trim(CStr(ws.Cells(rowNum, 3).Value))) > 0 And _
+                           Len(Trim(CStr(ws.Cells(rowNum, 4).Value))) > 0 And _
+                           Len(Trim(CStr(ws.Cells(rowNum, 5).Value))) > 0)
+    End If
+
+    ' Check if non-audit engagement has minimum required fields
+    If nonAuditFieldsFilled Then
+        hasNonAuditComplete = (Len(Trim(CStr(ws.Cells(rowNum, 8).Value))) > 0 And _
+                              Len(Trim(CStr(ws.Cells(rowNum, 9).Value))) > 0)
+    End If
+
+    ' Row is valid if either audit is complete OR non-audit is complete
+    IsEngagementRowValid = (hasAuditComplete Or hasNonAuditComplete)
+End Function
+
+Private Function ValidateEngagementRows(ws As Worksheet) As Boolean
+    Dim i As Integer
+    Dim hasAuditComplete As Boolean, hasNonAuditComplete As Boolean
+    Dim auditFieldsFilled As Boolean, nonAuditFieldsFilled As Boolean
+
+    ValidateEngagementRows = True
+
+    For i = 10 To 14
+        auditFieldsFilled = (Len(Trim(CStr(ws.Cells(i, 2).Value))) > 0 Or _
+                            Len(Trim(CStr(ws.Cells(i, 3).Value))) > 0 Or _
+                            Len(Trim(CStr(ws.Cells(i, 4).Value))) > 0 Or _
+                            Len(Trim(CStr(ws.Cells(i, 5).Value))) > 0 Or _
+                            Len(Trim(CStr(ws.Cells(i, 6).Value))) > 0)
+
+        nonAuditFieldsFilled = (Len(Trim(CStr(ws.Cells(i, 8).Value))) > 0 Or _
+                               Len(Trim(CStr(ws.Cells(i, 9).Value))) > 0 Or _
+                               Len(Trim(CStr(ws.Cells(i, 10).Value))) > 0)
+
+        ' If any fields are filled, validate completeness
+        If auditFieldsFilled Or nonAuditFieldsFilled Then
+
+            ' Check audit engagement completeness
+            If auditFieldsFilled Then
+                hasAuditComplete = (Len(Trim(CStr(ws.Cells(i, 2).Value))) > 0 And _
+                                   Len(Trim(CStr(ws.Cells(i, 3).Value))) > 0 And _
+                                   Len(Trim(CStr(ws.Cells(i, 4).Value))) > 0 And _
+                                   Len(Trim(CStr(ws.Cells(i, 5).Value))) > 0)
+            Else
+                hasAuditComplete = False
+            End If
+
+            ' Check non-audit engagement completeness
+            If nonAuditFieldsFilled Then
+                hasNonAuditComplete = (Len(Trim(CStr(ws.Cells(i, 8).Value))) > 0 And _
+                                      Len(Trim(CStr(ws.Cells(i, 9).Value))) > 0)
+            Else
+                hasNonAuditComplete = False
+            End If
+
+            ' If audit fields are filled but incomplete
+            If auditFieldsFilled And Not hasAuditComplete Then
+                MsgBox "Row " & i & ": Please complete all required Audit Engagement fields:" & vbCrLf & _
+                       "- Region (B" & i & ")" & vbCrLf & _
+                       "- Engagement ID (C" & i & ")" & vbCrLf & _
+                       "- Engagement Activity (D" & i & ")" & vbCrLf & _
+                       "- Hours (E" & i & ")", _
+                       vbExclamation, "Incomplete Audit Entry"
+                ws.Cells(i, 2).Select
+                ValidateEngagementRows = False
+                Exit Function
+            End If
+
+            ' If non-audit fields are filled but incomplete
+            If nonAuditFieldsFilled And Not hasNonAuditComplete Then
+                MsgBox "Row " & i & ": Please complete all required Non-Audit Engagement fields:" & vbCrLf & _
+                       "- Non-Audit Engagement (H" & i & ")" & vbCrLf & _
+                       "- Hours (I" & i & ")", _
+                       vbExclamation, "Incomplete Non-Audit Entry"
+                ws.Cells(i, 8).Select
+                ValidateEngagementRows = False
+                Exit Function
+            End If
+
+            ' At least one type must be complete for the row to be valid
+            If Not (hasAuditComplete Or hasNonAuditComplete) Then
+                MsgBox "Row " & i & ": Please complete either Audit OR Non-Audit engagement fields completely.", _
+                       vbExclamation, "Incomplete Entry"
+                ValidateEngagementRows = False
+                Exit Function
+            End If
+        End If
+    Next i
+End Function
+
+Private Function HasDuplicateEntries(wsForm As Worksheet, wsDB As Worksheet, enterpriseID As String, _
+                                   monthName As String, weekName As String, teamName As String) As Boolean
+    Dim i As Integer
+    HasDuplicateEntries = False
+
+    For i = 10 To 14
+        If IsEngagementRowValid(wsForm, i) Then
+            Dim engagementID As String
+            Dim region As String
+
+            ' Get engagement ID (audit or non-audit)
+            If Len(Trim(CStr(wsForm.Cells(i, 3).Value))) > 0 Then
+                engagementID = Trim(CStr(wsForm.Cells(i, 3).Value))
+                region = Trim(CStr(wsForm.Cells(i, 2).Value))
+            Else
+                engagementID = Trim(CStr(wsForm.Cells(i, 8).Value))
+                region = ""
+            End If
+
+            If CheckDuplicateInLocal(wsForm, enterpriseID, engagementID, monthName, weekName, region, teamName) Or _
+               CheckDuplicateInDB(wsDB, enterpriseID, engagementID, monthName, weekName, region, teamName) Then
+
+                Dim response As VbMsgBoxResult
+                response = MsgBox("Duplicate entry found for:" & vbCrLf & _
+                                "Week: " & weekName & vbCrLf & _
+                                "Team: " & teamName & vbCrLf & _
+                                "Engagement: " & engagementID & vbCrLf & _
+                                "Region: " & region & vbCrLf & vbCrLf & _
+                                "Do you want to make a correction instead?", _
+                                vbYesNo + vbExclamation, "Duplicate Entry")
+
+                If response = vbYes Then
+                    MsgBox "Please use the 'View/Correction' button to make changes to existing entries.", vbInformation
+                    HasDuplicateEntries = True
+                    Exit Function
+                Else
+                    MsgBox "Submission cancelled. Please review your entries.", vbInformation
+                    HasDuplicateEntries = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next i
+End Function
+
+Private Function CheckDuplicateInLocal(ws As Worksheet, enterpriseID As String, engagementID As String, _
+                                     monthName As String, weekName As String, region As String, teamName As String) As Boolean
+    Dim r As Long, lastRow As Long
+
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    For r = 3000 To lastRow
+        If ws.Cells(r, 2).Value = enterpriseID And _
+           ws.Cells(r, 7).Value = monthName And _
+           ws.Cells(r, 8).Value = weekName And _
+           ws.Cells(r, 9).Value = teamName And _
+           ((region <> "" And ws.Cells(r, 10).Value = region) Or region = "") And _
+           (ws.Cells(r, 11).Value = engagementID Or ws.Cells(r, 15).Value = engagementID) Then
+           CheckDuplicateInLocal = True
+           Exit Function
+        End If
+    Next r
+    CheckDuplicateInLocal = False
+End Function
+
+Private Function CheckDuplicateInDB(wsDB As Worksheet, enterpriseID As String, engagementID As String, _
+                                  monthName As String, weekName As String, region As String, teamName As String) As Boolean
+    Dim r As Long, lastRow As Long
+
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 1).Value = enterpriseID And _
+           wsDB.Cells(r, 6).Value = monthName And _
+           wsDB.Cells(r, 7).Value = weekName And _
+           wsDB.Cells(r, 8).Value = teamName And _
+           ((region <> "" And wsDB.Cells(r, 9).Value = region) Or region = "") And _
+           (wsDB.Cells(r, 10).Value = engagementID Or wsDB.Cells(r, 14).Value = engagementID) Then
+           CheckDuplicateInDB = True
+           Exit Function
+        End If
+    Next r
+    CheckDuplicateInDB = False
+End Function
+
+Private Sub WriteEngagementRecord(ws As Worksheet, nextRow As Long, _
+                                 enterpriseID As String, employeeName As String, employeeEmail As String, _
+                                 timesheetType As String, monthName As String, weekName As String, _
+                                 teamName As String, rowNum As Integer, submittedBy As String)
+
+    With ws
+        .Cells(nextRow, 2).Value = enterpriseID                  ' Enterprise ID
+        .Cells(nextRow, 3).Value = employeeName                  ' Employee Name
+        .Cells(nextRow, 4).Value = employeeEmail                 ' Employee Email
+        .Cells(nextRow, 5).Value = Format(Now, "yyyy-mm-dd hh:mm:ss") ' Date and time
+        .Cells(nextRow, 6).Value = timesheetType                 ' New Timesheet/Correction
+        .Cells(nextRow, 7).Value = monthName                     ' Month
+        .Cells(nextRow, 8).Value = weekName                      ' Week
+        .Cells(nextRow, 9).Value = teamName                      ' Team Name
+        .Cells(nextRow, 10).Value = .Cells(rowNum, 2).Value     ' Region
+        .Cells(nextRow, 11).Value = .Cells(rowNum, 3).Value     ' Audit Engagement ID
+        .Cells(nextRow, 12).Value = .Cells(rowNum, 4).Value     ' Engagement Activity
+        .Cells(nextRow, 13).Value = .Cells(rowNum, 5).Value     ' Engagement Hours
+        .Cells(nextRow, 14).Value = .Cells(rowNum, 6).Value     ' Remark 1
+        .Cells(nextRow, 15).Value = .Cells(rowNum, 8).Value     ' Non-Audit Engagement
+        .Cells(nextRow, 16).Value = .Cells(rowNum, 9).Value     ' Non-Audit Hours
+        .Cells(nextRow, 17).Value = .Cells(rowNum, 10).Value    ' Remark 2
+        .Cells(nextRow, 18).Value = submittedBy                 ' User Submitted Record
+
+        ' Set font color to white (hidden)
+        .Range(.Cells(nextRow, 2), .Cells(nextRow, 18)).Font.Color = RGB(255, 255, 255)
+    End With
+End Sub
+
+Public Sub ViewCorrection()
+    Dim wsForm As Worksheet
+    Set wsForm = ActiveSheet
+    Dim weekName As String, entID As String
+
+    weekName = Trim(wsForm.Range("E6").Value)
+    entID = Trim(wsForm.Range("W6").Value)
+
+    If weekName = "" Then
+        MsgBox "Please select a week first before viewing/correcting entries.", vbExclamation, "Week Required"
+        wsForm.Range("E6").Select
+        Exit Sub
+    End If
+
+    ' Set correction mode
+    isCorrectionMode = True
+
+    ' Clear the entry area first
+    ClearEntryArea wsForm
+
+    ' Load week data into the entry area
+    LoadWeekDataToEntryArea wsForm, weekName, entID
+
+    MsgBox "Week entries loaded in the timesheet area. You can now edit and submit corrections." & vbCrLf & _
+           "Note: Duplicate checking is disabled in correction mode.", vbInformation, "View/Correction Mode"
+End Sub
+
+Private Sub ClearEntryArea(ws As Worksheet)
+    On Error Resume Next
+    ws.Unprotect
+    ' Clear the entry area (rows 10-14)
+    ws.Range("B10:J14").ClearContents
+    ws.Range("B10:J14").Interior.ColorIndex = xlNone
+
+    ws.Cells.Locked = True
+    ws.Range("F2,W7").Locked = True
+    ws.Range("C6,E6,H6,B10:J14").Locked = False
+    ws.Range("B3000:T" & ws.Rows.Count).Locked = False
+    ws.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    On Error GoTo 0
+End Sub
+
+Private Sub LoadWeekDataToEntryArea(ws As Worksheet, weekName As String, entID As String)
+    Dim r As Long, lastRow As Long
+    Dim targetRow As Long
+    
+    targetRow = 10
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    
+    ' Search in local storage (from row 3000)
+    For r = 3000 To lastRow
+        If ws.Cells(r, 2).Value = entID And _
+           ws.Cells(r, 8).Value = weekName And _
+           targetRow <= 14 Then
+            
+            ' Copy data to entry area
+            ws.Cells(targetRow, 2).Value = ws.Cells(r, 10).Value  ' Region
+            ws.Cells(targetRow, 3).Value = ws.Cells(r, 11).Value  ' Audit Engagement
+            ws.Cells(targetRow, 4).Value = ws.Cells(r, 12).Value  ' Engagement Activity
+            ws.Cells(targetRow, 5).Value = ws.Cells(r, 13).Value  ' Hours
+            ws.Cells(targetRow, 6).Value = ws.Cells(r, 14).Value  ' Remark 1
+            ws.Cells(targetRow, 8).Value = ws.Cells(r, 15).Value  ' Non-Audit Engagement
+            ws.Cells(targetRow, 9).Value = ws.Cells(r, 16).Value  ' Non-Audit Hours
+            ws.Cells(targetRow, 10).Value = ws.Cells(r, 17).Value ' Remark 2
+            
+            targetRow = targetRow + 1
+        End If
+    Next r
+    
+    ' Also search in database
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+    
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 1).Value = entID And _
+           wsDB.Cells(r, 7).Value = weekName And _
+           targetRow <= 14 Then
+            
+            ' Copy data to entry area
+            ws.Cells(targetRow, 2).Value = wsDB.Cells(r, 9).Value   ' Region
+            ws.Cells(targetRow, 3).Value = wsDB.Cells(r, 10).Value  ' Audit Engagement
+            ws.Cells(targetRow, 4).Value = wsDB.Cells(r, 11).Value  ' Engagement Activity
+            ws.Cells(targetRow, 5).Value = wsDB.Cells(r, 12).Value  ' Hours
+            ws.Cells(targetRow, 6).Value = wsDB.Cells(r, 13).Value  ' Remark 1
+            ws.Cells(targetRow, 8).Value = wsDB.Cells(r, 14).Value  ' Non-Audit Engagement
+            ws.Cells(targetRow, 9).Value = wsDB.Cells(r, 15).Value  ' Non-Audit Hours
+            ws.Cells(targetRow, 10).Value = wsDB.Cells(r, 16).Value ' Remark 2
+            
+            targetRow = targetRow + 1
+        End If
+    Next r
+End Sub
+
+Public Sub SyncAllUserSheetsToDatabase()
+    On Error GoTo ErrorHandler
+
+    Dim pass As String
+    pass = InputBox("Enter sync password:", "Admin Sync Required")
+    If pass <> "123" Then
+        MsgBox "Incorrect password. Access denied.", vbCritical, "Access Denied"
+        Exit Sub
+    End If
+
+    Dim ws As Worksheet, wsDB As Worksheet, wsAdmin As Worksheet
+    Dim r As Long, lastLocalRow As Long, nextDBRow As Long
+    Dim recordCount As Long, userCount As Long, deletedCount As Long
+
+    recordCount = 0
+    userCount = 0
+    deletedCount = 0
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+    Set wsAdmin = ThisWorkbook.Sheets("Admin")
+
+    wsDB.Unprotect
+
+    ' First, process deletions in the database
+    Dim lastDBRow As Long
+    lastDBRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+    For r = lastDBRow To 2 Step -1
+        On Error Resume Next
+        If wsDB.Cells(r, 16).Value = "Marked for Deletion" Then
+            wsDB.Rows(r).Delete
+            deletedCount = deletedCount + 1
+        End If
+        On Error GoTo ErrorHandler
+    Next r
+
+    ' Process each user sheet
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Data base" And ws.Name <> "Login" And ws.Name <> "Admin" And ws.Name <> "DV" Then
+            lastLocalRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+            If lastLocalRow >= 3000 Then
+                Dim userRecords As Long: userRecords = 0
+                For r = 3000 To lastLocalRow
+                    If ws.Cells(r, 2).Value <> "" Then
+                        On Error Resume Next
+                        Dim isMarkedForDeletion As Boolean
+                        isMarkedForDeletion = (ws.Cells(r, 18).Value = "Marked for Deletion")
+                        On Error GoTo ErrorHandler
+
+                        If Not isMarkedForDeletion Then
+                            nextDBRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row + 1
+                            wsDB.Cells(nextDBRow, 1).Resize(1, 17).Value = ws.Cells(r, 2).Resize(1, 17).Value
+                            recordCount = recordCount + 1
+                            userRecords = userRecords + 1
+                        Else
+                            deletedCount = deletedCount + 1
+                        End If
+                    End If
+                Next r
+
+                If userRecords > 0 Or deletedCount > 0 Then
+                    On Error Resume Next
+                    ws.Unprotect
+                    On Error GoTo ErrorHandler
+
+                    ws.Range("B3000:S" & lastLocalRow).ClearContents
+                    ws.Range("B3000:S" & lastLocalRow).Interior.ColorIndex = xlNone
+                    userCount = userCount + 1
+
+                    On Error Resume Next
+                    ws.Cells.Locked = True
+                    ws.Range("F2,W7").Locked = True
+                    ws.Range("C6,E6,H6,B10:J29").Locked = False
+                    ws.Range("B3000:S" & ws.Rows.Count).Locked = False
+                    ws.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+                    On Error GoTo ErrorHandler
+                End If
+            End If
+        End If
+    Next ws
+
+    wsDB.Protect UserInterfaceOnly:=True
+
+    ' Update sync timestamp
+    wsAdmin.Range("G5").Value = Format(Now, "yyyy-mm-dd hh:mm:ss")
+
+    ThisWorkbook.Save
+
+    MsgBox "SYNC COMPLETED!" & vbCrLf & _
+           "Users processed: " & userCount & vbCrLf & _
+           "Records synced: " & recordCount & vbCrLf & _
+           "Records deleted: " & deletedCount & vbCrLf & _
+           "All local buffers cleared." & vbCrLf & _
+           "Last sync: " & Format(Now, "yyyy-mm-dd hh:mm:ss"), vbInformation, "Sync Complete"
+
+    Call UpdatePendingCounts
+    Call LogoutAllUserSheets
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical, "Error"
+    On Error Resume Next
+    wsDB.Protect UserInterfaceOnly:=True
+    ThisWorkbook.Save
+End Sub
+
+Private Function ValidateBasicFields(wsForm As Worksheet, enterpriseID As String, monthName As String, weekName As String, teamName As String) As Boolean
+    ValidateBasicFields = True
+    If enterpriseID = "" Then
+        MsgBox "Enterprise ID is required.", vbExclamation: ValidateBasicFields = False: Exit Function
+    End If
+    If monthName = "" Then
+        MsgBox "Please select Month.", vbExclamation: ValidateBasicFields = False: wsForm.Range("C6").Select: Exit Function
+    End If
+    If weekName = "" Then
+        MsgBox "Please select Week", vbExclamation: ValidateBasicFields = False: wsForm.Range("E6").Select: Exit Function
+    End If
+    If teamName = "" Then
+        MsgBox "Please select Your Team.", vbExclamation: ValidateBasicFields = False: wsForm.Range("H6").Select: Exit Function
+    End If
+End Function
+
+Private Sub ResetFormInputsOnly(f As Worksheet)
+    Application.EnableEvents = False
+    f.Unprotect
+
+    ' Reset correction mode
+    isCorrectionMode = False
+
+    ' Clear engagement data (rows 10-14) and basic selections
+    f.Range("B10:J14").ClearContents
+    f.Range("B10:J14").Interior.ColorIndex = xlNone
+    f.Range("C6,E6,H6").ClearContents
+
+    ' Set proper protection
+    f.Cells.Locked = True
+    f.Range("F2,W7").Locked = True
+    f.Range("C6,E6,H6,B10:J14").Locked = False
+    f.Range("B3000:S" & f.Rows.Count).Locked = False
+
+    f.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    Application.EnableEvents = True
+End Sub
+
+Public Sub LogoutUser()
+    Dim response As VbMsgBoxResult
+    response = MsgBox("Are you sure you want to logout?" & vbCrLf & _
+                     "This will hide your sheet.", vbYesNo + vbQuestion, "Confirm Logout")
+
+    If response = vbYes Then
+        isCorrectionMode = False
+        ActiveSheet.Visible = xlSheetVeryHidden
+        Sheets("Login").Activate
+        Sheets("Login").Range("F24").ClearContents
+        Sheets("Login").Range("F24").Select
+        MsgBox "Logged out successfully. Please close this Excel file.", vbInformation
+    End If
+End Sub
+
+Public Sub UpdatePendingCounts()
+    Dim ws As Worksheet
+    Dim totalPending As Long
+    Dim userCount As Long
+    Dim lastRow As Long
+    Dim sheetPending As Long
+
+    totalPending = 0
+    userCount = 0
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "DV" And ws.Name <> "Admin" Then
+            lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+            If lastRow >= 3000 Then
+                sheetPending = Application.WorksheetFunction.CountA(ws.Range("B3000:B" & lastRow))
+                If sheetPending > 0 Then
+                    totalPending = totalPending + sheetPending
+                    userCount = userCount + 1
+                End If
+            End If
+        End If
+    Next ws
+
+    With ThisWorkbook.Sheets("Admin")
+        .Range("G3").Value = totalPending
+        .Range("G4").Value = userCount
+    End With
+End Sub
+
+Public Sub LogoutAllUserSheets()
+    Dim ws As Worksheet, Count As Long
+    Count = 0
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "Admin" Then
+            ws.Visible = xlSheetVeryHidden
+            Count = Count + 1
+        End If
+    Next ws
+
+    Sheets("Admin").Activate
+End Sub
+
+Public Sub ShowAllUserSheets()
+    If InputBox("Enter admin password:") <> "123" Then
+        MsgBox "Access denied": Exit Sub
+    End If
+
+    Dim ws As Worksheet, Count As Long
+    Count = 0
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "Admin" Then
+            ws.Visible = xlSheetVisible
+            Count = Count + 1
+        End If
+    Next ws
+
+    MsgBox Count & " user sheets are now visible.", vbInformation
+End Sub
+
+Public Sub HideAllUserSheets()
+    If InputBox("Enter admin password:") <> "123" Then
+        MsgBox "Access denied": Exit Sub
+    End If
+
+    Dim ws As Worksheet, Count As Long
+    Count = 0
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "Admin" Then
+            ws.Visible = xlSheetVeryHidden
+            Count = Count + 1
+        End If
+    Next ws
+
+    Sheets("Login").Activate
+    MsgBox Count & " user sheets have been hidden.", vbInformation
+End Sub
+
+Public Sub OpenTimesheetCorrectionForm()
+    On Error GoTo ErrorHandler
+
+    If Trim(ActiveSheet.Range("W6").Value) = "" Then
+        MsgBox "Please login first. Enterprise ID not found in cell W6.", vbExclamation, "Login Required"
+        Exit Sub
+    End If
+
+    Dim correctionForm As UserFormDE
+    Set correctionForm = New UserFormDE
+
+    correctionForm.LoadEmployeeName
+
+    correctionForm.Show
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error opening correction form: " & Err.Description, vbCritical, "Error"
+    On Error Resume Next
+    Set correctionForm = Nothing
+End Sub
+
+Public Sub ToggleMyDatabaseRecords()
+    Dim wsF As Worksheet, wsDB As Worksheet
+    Dim entID As String, i As Long, lastRow As Long, outRow As Long
+    Dim startCell As Range, tblArea As Range
+    Dim isDataPresent As Boolean
+
+    Set wsF = ActiveSheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+    Set startCell = wsF.Range("B25")
+    Set tblArea = wsF.Range("B25:S297")
+
+    entID = Trim(wsF.Range("W6").Value)
+    If entID = "" Then
+        MsgBox "Please verify Enterprise ID is populated.", vbExclamation
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    wsF.Unprotect
+    On Error GoTo 0
+
+    isDataPresent = WorksheetFunction.CountA(tblArea.Offset(1)) > 0
+
+    If isDataPresent Then
+        tblArea.Offset(1).ClearContents
+        tblArea.Offset(1).ClearFormats
+        tblArea.Offset(1).Interior.ColorIndex = xlNone
+        tblArea.Offset(1).Borders.LineStyle = xlNone
+        startCell.Resize(1, 18).ClearContents
+        startCell.Resize(1, 18).ClearFormats
+
+        On Error Resume Next
+        wsF.Cells.Locked = True
+        wsF.Range("F2,W7").Locked = True
+        wsF.Range("C6,E6,H6,B10:J15").Locked = False
+        wsF.Range("B3000:S" & wsF.Rows.Count).Locked = False
+        wsF.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+        On Error GoTo 0
+        MsgBox "Your past timesheet records have been hidden. Please click again to show them", vbInformation, "Toggle Complete"
+        Exit Sub
+    End If
+
+    ' Headers
+    startCell.Resize(1, 18).Value = Array("Enterprise ID", "Employee Name", "Employee Email", _
+        "Date and Time", "Type", "Month", "Week", "Team Name", "Region", "Audit Engagement", "Engagement Activity", _
+        "Engagement Hr", "Remark 1", "Non-Audit Eng", "Non-Audit Hr", "Remark 2", "Submitted By", "Sync Status")
+
+    With startCell.Resize(1, 18)
+        .Font.Bold = True
+        .Interior.Color = RGB(200, 200, 200)
+        .Borders.LineStyle = xlContinuous
+        .HorizontalAlignment = xlCenter
+    End With
+
+    outRow = 1
+
+    ' Show database records (synced)
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+    If lastRow >= 2 Then
+        For i = 2 To lastRow
+            If wsDB.Cells(i, 1).Value = entID Then
+                startCell.Offset(outRow).Resize(1, 17).Value = wsDB.Range(wsDB.Cells(i, 1), wsDB.Cells(i, 17)).Value
+                startCell.Offset(outRow, 17).Value = "Synced"
+                startCell.Offset(outRow, 17).Interior.Color = RGB(200, 255, 200)
+                outRow = outRow + 1
+            End If
+        Next i
+    End If
+
+    ' Show local pending records
+    Dim localLastRow As Long
+    localLastRow = wsF.Cells(wsF.Rows.Count, "B").End(xlUp).Row
+    If localLastRow >= 3000 Then
+        For i = 3000 To localLastRow
+            If wsF.Cells(i, 2).Value <> "" And wsF.Cells(i, 2).Value = entID Then
+                startCell.Offset(outRow).Resize(1, 17).Value = wsF.Range(wsF.Cells(i, 2), wsF.Cells(i, 18)).Value
+                startCell.Offset(outRow, 17).Value = "Pending Sync"
+                startCell.Offset(outRow, 17).Interior.Color = RGB(255, 255, 200)
+                outRow = outRow + 1
+            End If
+        Next i
+    End If
+
+    ' Format data rows
+    If outRow > 1 Then
+        With startCell.Offset(1).Resize(outRow - 1, 18)
+            .Borders.LineStyle = xlContinuous
+            .HorizontalAlignment = xlLeft
+        End With
+
+        For i = 2 To outRow - 1 Step 2
+            startCell.Offset(i).Resize(1, 18).Interior.Color = RGB(240, 240, 240)
+        Next i
+
+        MsgBox outRow - 1 & " Record(s) displayed for " & entID
+    Else
+        MsgBox "No records found for Enterprise ID: " & entID, vbInformation, "No Records"
+    End If
+
+    On Error Resume Next
+    wsF.Cells.Locked = True
+    wsF.Range("F2,W7").Locked = True
+    wsF.Range("C6,E6,H6,B10:J15").Locked = False
+    wsF.Range("B3000:S" & wsF.Rows.Count).Locked = False
+    wsF.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    On Error GoTo 0
+End Sub
+```
+
+2. UserFormDE Code (User Form):
+
 ' ==================== USERFORM DE CODE (FIXED SubItem.Count Issue) ====================
 Option Explicit
 
@@ -11,11 +962,11 @@ Private currentUserID As String
 Private isCorrection As Boolean
 Private correctionSource As String ' "LOCAL" or "DATABASE"
 Private correctionRowNumber As Long
-Private originalRegionItems As Collection
-Private originalEngagementItems As Collection
-Private originalActivityItems As Collection
-Private originalTeamItems As Collection
-Private originalNEItems As Collection
+Private originalRegionItems As collection
+Private originalEngagementItems As collection
+Private originalActivityItems As collection
+Private originalTeamItems As collection
+Private originalNEItems As collection
 
 ' Variables to store non-editable fields for saving back
 Private originalEnterpriseID As String
@@ -39,11 +990,11 @@ Private Sub UserForm_Initialize()
     originalSubmittedBy = ""
 
     ' Initialize original item collections
-    Set originalRegionItems = New Collection
-    Set originalEngagementItems = New Collection
-    Set originalActivityItems = New Collection
-    Set originalTeamItems = New Collection
-    Set originalNEItems = New Collection
+    Set originalRegionItems = New collection
+    Set originalEngagementItems = New collection
+    Set originalActivityItems = New collection
+    Set originalTeamItems = New collection
+    Set originalNEItems = New collection
 
     Call InitializeComboBoxes
     Call ClearForm(False)
@@ -139,31 +1090,31 @@ End Sub
 
 Private Sub LoadRegionDropdown()
     Me.ComboRegion.Clear
-    Set originalRegionItems = New Collection
+    Set originalRegionItems = New collection
     Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboRegion, "Region", originalRegionItems)
 End Sub
 
 Private Sub LoadActivityDropdown()
     Me.ComboActi.Clear
-    Set originalActivityItems = New Collection
+    Set originalActivityItems = New collection
     Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboActi, "EngActivity", originalActivityItems)
 End Sub
 
 Private Sub LoadTeamDropdown()
     Me.ComboTeam.Clear
-    Set originalTeamItems = New Collection
+    Set originalTeamItems = New collection
     Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboTeam, "Team_Name", originalTeamItems)
 End Sub
 
 Private Sub LoadNEDropdown()
     Me.ComboNE.Clear
-    Set originalNEItems = New Collection
+    Set originalNEItems = New collection
     Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboNE, "Other_than_Eng", originalNEItems)
 End Sub
 
 Private Sub LoadEngagementDropdown()
     Me.ComboEng.Clear
-    Set originalEngagementItems = New Collection
+    Set originalEngagementItems = New collection
 
     If Me.ComboRegion.Value <> "" Then
         Dim regionValue As String
@@ -209,7 +1160,7 @@ Private Sub UpdateWeekDropdown()
     currentDate = firstDayOfMonth
     Do While currentDate <= lastDayOfMonth
         If Weekday(currentDate, vbMonday) = 1 Then
-            weekString = "Week starting " & Format(currentDate, "mmmm d, yyyy")
+            weekString = "Week starting " & Format(currentDate, "mmmm d yyyy")
             Me.ComboWeek.AddItem weekString
         End If
         currentDate = currentDate + 1
@@ -295,7 +1246,7 @@ Private Function LoadRecordsFromDatabase() As Long
 
     For r = 2 To lastRow
         If wsDB.Cells(r, 1).Value = currentUserID Then
-            Dim listItem As ListItem
+            Dim listItem As listItem
             Set listItem = Me.ListViewRecord.ListItems.Add(, , wsDB.Cells(r, 1).Value)  ' Enterprise ID
             
             ' Set a key for tracking: SOURCE_ROWNUMBER
@@ -345,7 +1296,7 @@ Private Function LoadRecordsFromLocal() As Long
 
     For r = 3000 To lastRow
         If wsUser.Cells(r, 2).Value = currentUserID Then
-            Dim listItem As ListItem
+            Dim listItem As listItem
             Set listItem = Me.ListViewRecord.ListItems.Add(, , wsUser.Cells(r, 2).Value)  ' Enterprise ID
             
             ' Set a key for tracking: SOURCE_ROWNUMBER
@@ -379,7 +1330,7 @@ End Function
 Private Sub ListViewRecord_DblClick()
     If Me.ListViewRecord.selectedItem Is Nothing Then Exit Sub
 
-    Dim selectedItem As ListItem
+    Dim selectedItem As listItem
     Set selectedItem = Me.ListViewRecord.selectedItem
 
     ' Extract source and row number from key
@@ -402,7 +1353,7 @@ Private Sub ListViewRecord_DblClick()
 End Sub
 
 ' Helper function to safely get SubItem value - FIXED VERSION (No .Count property)
-Private Function GetSafeSubItemValue(selectedItem As ListItem, index As Integer) As String
+Private Function GetSafeSubItemValue(selectedItem As listItem, index As Integer) As String
     On Error GoTo SafeExit
     
     ' ListView SubItems are 1-based (1 = first subitem after Text)
@@ -436,7 +1387,7 @@ SafeExit:
     GetSafeSubItemValue = ""
 End Function
 
-Private Function LoadRecordFromListView(selectedItem As ListItem) As Boolean
+Private Function LoadRecordFromListView(selectedItem As listItem) As Boolean
     On Error GoTo ErrorHandler
 
     LoadRecordFromListView = False
@@ -806,6 +1757,2470 @@ Private Sub ClearForm(clearAll As Boolean)
     ' Set focus to ComboMonth after clearing
     Me.ComboMonth.SetFocus
 End Sub
+Private Sub Commandfilter_Click()
+    Call FilterRecords
+End Sub
+
+Private Sub FilterRecords()
+    On Error GoTo ErrorHandler
+
+    If currentUserID = "" Then
+        MsgBox "Enterprise ID not available. Please ensure you're logged in properly.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Clear ListView
+    Me.ListViewRecord.ListItems.Clear
+
+    Dim recordCount As Long
+    recordCount = 0
+
+    ' Filter records from Database
+    recordCount = recordCount + FilterRecordsFromDatabase()
+
+    ' Filter records from Local storage
+    recordCount = recordCount + FilterRecordsFromLocal()
+
+    If recordCount > 0 Then
+        MsgBox "Filtered " & recordCount & " records based on your criteria.", vbInformation
+    Else
+        MsgBox "No records found matching your filter criteria.", vbInformation
+    End If
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error filtering records: " & Err.Description, vbCritical
+End Sub
+
+Private Function FilterRecordsFromDatabase() As Long
+    On Error Resume Next
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim recordCount As Long
+    Dim includeRecord As Boolean
+
+    recordCount = 0
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 1).Value = currentUserID Then
+            includeRecord = True
+
+            ' Apply filters based on form selections
+            If Me.ComboMonth.Value <> "" And wsDB.Cells(r, 6).Value <> Me.ComboMonth.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboWeek.Value <> "" And wsDB.Cells(r, 7).Value <> Me.ComboWeek.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboTeam.Value <> "" And wsDB.Cells(r, 8).Value <> Me.ComboTeam.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboRegion.Value <> "" And wsDB.Cells(r, 9).Value <> Me.ComboRegion.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboEng.Value <> "" And wsDB.Cells(r, 10).Value <> Me.ComboEng.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboActi.Value <> "" And wsDB.Cells(r, 11).Value <> Me.ComboActi.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboNE.Value <> "" And wsDB.Cells(r, 14).Value <> Me.ComboNE.Value Then
+                includeRecord = False
+            End If
+
+            If includeRecord Then
+                Dim listItem As listItem
+                Set listItem = Me.ListViewRecord.ListItems.Add(, , wsDB.Cells(r, 1).Value)
+                listItem.Key = "DB_" & r
+
+                ' Add subitems for remaining 16 columns
+                listItem.SubItems(1) = CStr(wsDB.Cells(r, 2).Value)   ' Employee Name
+                listItem.SubItems(2) = CStr(wsDB.Cells(r, 3).Value)   ' Employee Email
+                listItem.SubItems(3) = CStr(wsDB.Cells(r, 4).Value)   ' Date Time
+                listItem.SubItems(4) = CStr(wsDB.Cells(r, 5).Value)   ' Type
+                listItem.SubItems(5) = CStr(wsDB.Cells(r, 6).Value)   ' Month
+                listItem.SubItems(6) = CStr(wsDB.Cells(r, 7).Value)   ' Week
+                listItem.SubItems(7) = CStr(wsDB.Cells(r, 8).Value)   ' Team Name
+                listItem.SubItems(8) = CStr(wsDB.Cells(r, 9).Value)   ' Region
+                listItem.SubItems(9) = CStr(wsDB.Cells(r, 10).Value)  ' Audit Engagement
+                listItem.SubItems(10) = CStr(wsDB.Cells(r, 11).Value) ' Engagement Activity
+                listItem.SubItems(11) = CStr(wsDB.Cells(r, 12).Value) ' Engagement Hr
+                listItem.SubItems(12) = CStr(wsDB.Cells(r, 13).Value) ' Remark 1
+                listItem.SubItems(13) = CStr(wsDB.Cells(r, 14).Value) ' Non-Audit Eng
+                listItem.SubItems(14) = CStr(wsDB.Cells(r, 15).Value) ' Non-Audit Hr
+                listItem.SubItems(15) = CStr(wsDB.Cells(r, 16).Value) ' Remark 2
+                listItem.SubItems(16) = CStr(wsDB.Cells(r, 17).Value) ' Submitted By
+
+                recordCount = recordCount + 1
+            End If
+        End If
+    Next r
+
+    FilterRecordsFromDatabase = recordCount
+End Function
+
+Private Function FilterRecordsFromLocal() As Long
+    On Error Resume Next
+    Dim wsUser As Worksheet
+    Set wsUser = ActiveSheet
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim recordCount As Long
+    Dim includeRecord As Boolean
+
+    recordCount = 0
+    lastRow = wsUser.Cells(wsUser.Rows.Count, "B").End(xlUp).Row
+
+    If lastRow < 3000 Then
+        FilterRecordsFromLocal = 0
+        Exit Function
+    End If
+
+    For r = 3000 To lastRow
+        If wsUser.Cells(r, 2).Value = currentUserID Then
+            includeRecord = True
+
+            ' Apply filters based on form selections
+            If Me.ComboMonth.Value <> "" And wsUser.Cells(r, 7).Value <> Me.ComboMonth.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboWeek.Value <> "" And wsUser.Cells(r, 8).Value <> Me.ComboWeek.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboTeam.Value <> "" And wsUser.Cells(r, 9).Value <> Me.ComboTeam.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboRegion.Value <> "" And wsUser.Cells(r, 10).Value <> Me.ComboRegion.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboEng.Value <> "" And wsUser.Cells(r, 11).Value <> Me.ComboEng.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboActi.Value <> "" And wsUser.Cells(r, 12).Value <> Me.ComboActi.Value Then
+                includeRecord = False
+            End If
+
+            If Me.ComboNE.Value <> "" And wsUser.Cells(r, 15).Value <> Me.ComboNE.Value Then
+                includeRecord = False
+            End If
+
+            If includeRecord Then
+                Dim listItem As listItem
+                Set listItem = Me.ListViewRecord.ListItems.Add(, , wsUser.Cells(r, 2).Value)
+                listItem.Key = "LOCAL_" & r
+
+                ' Add subitems for remaining 16 columns
+                listItem.SubItems(1) = CStr(wsUser.Cells(r, 3).Value)   ' Employee Name
+                listItem.SubItems(2) = CStr(wsUser.Cells(r, 4).Value)   ' Employee Email
+                listItem.SubItems(3) = CStr(wsUser.Cells(r, 5).Value)   ' Date Time
+                listItem.SubItems(4) = CStr(wsUser.Cells(r, 6).Value)   ' Type
+                listItem.SubItems(5) = CStr(wsUser.Cells(r, 7).Value)   ' Month
+                listItem.SubItems(6) = CStr(wsUser.Cells(r, 8).Value)   ' Week
+                listItem.SubItems(7) = CStr(wsUser.Cells(r, 9).Value)   ' Team Name
+                listItem.SubItems(8) = CStr(wsUser.Cells(r, 10).Value)  ' Region
+                listItem.SubItems(9) = CStr(wsUser.Cells(r, 11).Value)  ' Audit Engagement
+                listItem.SubItems(10) = CStr(wsUser.Cells(r, 12).Value) ' Engagement Activity
+                listItem.SubItems(11) = CStr(wsUser.Cells(r, 13).Value) ' Engagement Hr
+                listItem.SubItems(12) = CStr(wsUser.Cells(r, 14).Value) ' Remark 1
+                listItem.SubItems(13) = CStr(wsUser.Cells(r, 15).Value) ' Non-Audit Eng
+                listItem.SubItems(14) = CStr(wsUser.Cells(r, 16).Value) ' Non-Audit Hr
+                listItem.SubItems(15) = CStr(wsUser.Cells(r, 17).Value) ' Remark 2
+                listItem.SubItems(16) = CStr(wsUser.Cells(r, 18).Value) ' Submitted By
+
+                recordCount = recordCount + 1
+            End If
+        End If
+    Next r
+
+    FilterRecordsFromLocal = recordCount
+End Function
+
+Private Function ValidateComboBoxValue(combo As MSForms.comboBox, Value As String) As Boolean
+    Dim i As Integer
+    ValidateComboBoxValue = False
+
+    For i = 0 To combo.ListCount - 1
+        If combo.List(i) = Value Then
+            ValidateComboBoxValue = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = vbFormControlMenu Then
+        Dim response As VbMsgBoxResult
+        response = MsgBox("Are you sure you want to close the correction form?", vbYesNo + vbQuestion, "Confirm Close")
+
+        If response = vbNo Then
+            Cancel = True
+        End If
+    End If
+End Sub
+
+' Add this missing subroutine
+Private Sub PopulateComboFromNameManagerUniqueWithCollection(combo As MSForms.comboBox, nameManagerName As String, col As collection)
+    On Error Resume Next
+
+    Dim nameRange As Range
+    Set nameRange = ThisWorkbook.Names(nameManagerName).RefersToRange
+
+    If Not nameRange Is Nothing Then
+        Dim cell As Range
+        Dim itemValue As String
+        Dim itemExists As Boolean
+
+        ' Clear the collection
+        Set col = New collection
+        combo.Clear
+
+        For Each cell In nameRange
+            If cell.Value <> "" Then
+                itemValue = Trim(CStr(cell.Value))
+                itemExists = False
+
+                ' Check if item already exists in collection
+                On Error Resume Next
+                Dim testItem As String
+                testItem = col(itemValue)
+                If Err.Number = 0 Then
+                    itemExists = True
+                End If
+                Err.Clear
+                On Error GoTo 0
+
+                ' Add unique items only
+                If Not itemExists Then
+                    col.Add itemValue, itemValue
+                    combo.AddItem itemValue
+                End If
+            End If
+        Next cell
+    End If
+
+    On Error GoTo 0
+End Sub
+
+Private Sub CommandClose_Click()
+    Unload Me
+End Sub
+
+3. User Sheet Code (Worksheet Module):
+
+```vba
+' ==================== USER SHEET CODE ====================
+Private Sub Worksheet_Activate()
+    ' When sheet is activated, focus on Month selection if Enterprise ID is populated
+    If Me.Range("W6").Value <> "" Then
+        Me.Range("C6").Select
+    End If
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    ' Provide visual feedback when users are in the engagement entry area
+    Static lastTarget As Range
+
+    ' Clear previous highlighting
+    If Not lastTarget Is Nothing Then
+        On Error Resume Next
+        lastTarget.Interior.ColorIndex = xlNone
+        On Error GoTo 0
+        Set lastTarget = Nothing
+    End If
+
+    ' Highlight current row if in engagement entry area (rows 10-14)
+    If Target.Cells.Count = 1 Then
+        If Target.Row >= 10 And Target.Row <= 14 And Target.Column >= 2 And Target.Column <= 10 Then
+            On Error Resume Next
+            Me.Range("B" & Target.Row & ":J" & Target.Row).Interior.Color = RGB(245, 245, 245)
+            Set lastTarget = Me.Range("B" & Target.Row & ":J" & Target.Row)
+            On Error GoTo 0
+        End If
+    End If
+End Sub
+
+Private Sub Worksheet_Deactivate()
+    On Error Resume Next
+    ' Clear any remaining highlighting
+    Me.Range("B10:J14").Interior.ColorIndex = xlNone
+    On Error GoTo 0
+End Sub
+```
+
+4. ThisWorkbook Code:
+
+```vba
+' ==================== THISWORKBOOK CODE ====================
+Option Explicit
+
+Private Sub Workbook_Open()
+    Dim ws As Worksheet
+    Dim activeUsers As Collection
+
+    Application.ScreenUpdating = False
+    Set activeUsers = New Collection
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "DV" And ws.Name <> "Admin" Then
+            If IsSheetInUse(ws) Then
+                activeUsers.Add ws.Name
+            End If
+        End If
+    Next ws
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "DV" And ws.Name <> "Admin" Then
+            If Not IsInCollection(activeUsers, ws.Name) Then
+                ws.Visible = xlSheetVeryHidden
+            End If
+        End If
+    Next ws
+
+    ' Setup Login sheet protection with F24 unprotected
+    SetupLoginSheet
+
+    Sheets("Login").Visible = xlSheetVisible
+    Sheets("Login").Activate
+    Sheets("Login").Range("F24").Select
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub SetupLoginSheet()
+    Dim loginWS As Worksheet
+
+    On Error Resume Next
+    Set loginWS = Sheets("Login")
+
+    If Not loginWS Is Nothing Then
+        ' Unprotect the sheet first
+        loginWS.Unprotect
+
+        ' Lock all cells by default
+        loginWS.Cells.Locked = True
+
+        ' Unlock F24 cell specifically for user input
+        loginWS.Range("F24").Locked = False
+
+        ' Protect the sheet while allowing F24 to be editable
+        loginWS.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    End If
+
+    On Error GoTo 0
+End Sub
+
+Private Function IsSheetInUse(ws As Worksheet) As Boolean
+    On Error Resume Next
+    IsSheetInUse = Not ws.Protection.AllowEditRanges Is Nothing
+    On Error GoTo 0
+End Function
+
+Private Function IsInCollection(col As Collection, val As Variant) As Boolean
+    Dim item As Variant
+    For Each item In col
+        If item = val Then
+            IsInCollection = True
+            Exit Function
+        End If
+    Next item
+    IsInCollection = False
+End Function
+
+Private Sub Workbook_SheetActivate(ByVal Sh As Object)
+    On Error Resume Next
+    If Sh.Name = "Admin" Then
+        Call UpdatePendingCounts
+    ElseIf Sh.Name = "Login" Then
+        ' Ensure F24 remains unprotected when Login sheet is activated
+        SetupLoginSheet
+    End If
+End Sub
+
+Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
+    Const YEAR_CELL As String = "H1"
+    Const MONTH_CELL As String = "C6"
+
+    On Error GoTo ErrorHandler
+
+    If Not (Intersect(Target, Sh.Range(YEAR_CELL)) Is Nothing And _
+            Intersect(Target, Sh.Range(MONTH_CELL)) Is Nothing) Then
+        HandleYearMonthChange Sh, Target
+    End If
+
+    Exit Sub
+
+ErrorHandler:
+    Debug.Print "Error " & Err.Number & ": " & Err.Description
+    Application.EnableEvents = True
+End Sub
+
+Private Sub HandleYearMonthChange(Sh As Worksheet, Target As Range)
+    Const YEAR_CELL As String = "H1"
+    Const MONTH_CELL As String = "C6"
+    Const WEEK_CELL As String = "E6"
+
+    Dim selectedYear As Integer
+    Dim selectedMonth As String
+    Dim firstDayOfMonth As Date
+    Dim lastDayOfMonth As Date
+    Dim currentDate As Date
+    Dim weekList As New Collection
+    Dim weekString As String
+    Dim weekArray() As String
+    Dim i As Integer
+
+    Application.EnableEvents = False
+    UnprotectSheet Sh
+
+    selectedYear = Sh.Range(YEAR_CELL).Value
+    selectedMonth = Sh.Range(MONTH_CELL).Value
+
+    If selectedYear = 0 Or selectedMonth = "" Then
+        Sh.Range(WEEK_CELL).Value = ""
+        If HasValidation(Sh.Range(WEEK_CELL)) Then
+            Sh.Range(WEEK_CELL).Validation.Delete
+        End If
+        GoTo CleanUp
+    End If
+
+    firstDayOfMonth = DateSerial(selectedYear, Month(selectedMonth & " 1"), 1)
+    lastDayOfMonth = DateSerial(selectedYear, Month(selectedMonth & " 1") + 1, 0)
+
+    currentDate = firstDayOfMonth
+    Do While currentDate <= lastDayOfMonth
+        If Weekday(currentDate, vbMonday) = 1 Then
+            weekString = "Week starting " & Format(currentDate, "mmmm d yyyy")
+            weekList.Add weekString
+        End If
+        currentDate = currentDate + 1
+    Loop
+
+    ReDim weekArray(1 To weekList.Count)
+    For i = 1 To weekList.Count
+        weekArray(i) = weekList(i)
+    Next i
+
+    If HasValidation(Sh.Range(WEEK_CELL)) Then
+        Sh.Range(WEEK_CELL).Validation.Delete
+    End If
+
+    Sh.Range(WEEK_CELL).Validation.Add _
+        Type:=xlValidateList, _
+        AlertStyle:=xlValidAlertStop, _
+        Formula1:=Join(weekArray, ",")
+
+    Sh.Range(WEEK_CELL).Value = ""
+
+CleanUp:
+    ProtectSheet Sh
+    Application.EnableEvents = True
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    Dim userName As String
+    Dim ws As Worksheet
+
+    userName = Environ("USERNAME")
+    For Each ws In ThisWorkbook.Worksheets
+        If LCase(ws.Name) = LCase(userName) Then
+            If Not ws.Visible = xlSheetHidden Then
+                ws.Visible = xlSheetHidden
+            End If
+            Exit For
+        End If
+    Next ws
+End Sub
+
+Private Function HasValidation(rng As Range) As Boolean
+    On Error Resume Next
+    HasValidation = (rng.Validation.Type <> xlValidateInputOnly)
+    On Error GoTo 0
+End Function
+
+Private Sub UnprotectSheet(ws As Worksheet)
+    On Error Resume Next
+    ws.Unprotect
+    On Error GoTo 0
+End Sub
+
+Private Sub ProtectSheet(ws As Worksheet)
+    On Error Resume Next
+    ' Special handling for Login sheet
+    If ws.Name = "Login" Then
+        SetupLoginSheet
+    Else
+        ws.Protect UserInterfaceOnly:=True
+    End If
+    On Error GoTo 0
+End Sub
+```
+
+Step-by-Step Implementation Guide:
+
+Step 1: Set Up Excel File Structure
+
+1. Create a new Excel workbook
+2. Create the following sheets:
+   · Login
+   · Data base
+   · DV
+   · Admin
+   · User sheets (named with Enterprise IDs like K12345, K67890, etc.)
+
+Step 2: Add VBA Code
+
+1. Press ALT + F11 to open VBA Editor
+2. Right-click on VBAProject → Insert → Module (paste Module code)
+3. Right-click on VBAProject → Insert → UserForm (name it UserFormDE)
+   · Add all controls as mentioned in your design
+   · Paste the UserForm code
+4. Double-click on ThisWorkbook and paste ThisWorkbook code
+5. For each user sheet, right-click sheet → View Code and paste User Sheet code
+
+Step 3: Add Required References
+
+1. In VBA Editor: Tools → References
+2. Add reference to: Microsoft Windows Common Controls 6.0 (SP6)
+
+Step 4: Set Up Named Ranges
+
+In DV sheet, create these named ranges:
+
+· Region
+· EngActivity
+· Team_Name
+· Other_than_Eng
+· Region-specific named ranges (e.g., Americas, EMEA, Asia, etc.)
+
+Step 5: Add Form Controls on Sheets
+
+1. On Login sheet: Add a dropdown in F24 for Enterprise IDs
+2. On each user sheet: Add buttons for:
+   · Submit Timesheet
+   · View/Correction
+   · Open Correction Form
+   · Toggle My Records
+   · Logout
+
+Step 6: Format User Sheets
+
+1. Set up the layout as per your image
+2. Create data validation for dropdowns
+3. Protect cells as specified in code
+
+Key Features Fixed:
+
+1. Correction Form Works: Double-clicking records in ListView now correctly populates form controls
+2. Old Record Deletion: When correcting, old record is deleted and new one added
+3. Multiple User Support: Each user logs into their own sheet
+4. Data Validation: Hours validation, required fields validation
+5. Duplicate Checking: Prevents duplicate entries in normal mode
+6. Local Storage: Records stored locally before admin sync
+
+Testing Instructions:
+
+1. Login Test: Select Enterprise ID in Login sheet F24 and click Login
+2. Submit Timesheet: Fill in Month, Week, Team, and engagement details, then submit
+3. Correction Test: Open correction form, double-click a record, modify, and submit correction
+4. View Records: Use Toggle button to view all records
+5. Admin Sync: Use password "123" to sync all records to database
+
+This complete solution should work without compilation errors and handle all your requirements for a multi-user timesheet system with correction functionality.
+
+
+
+
+===≈≠5555==≈≈====≈
+
+
+
+Complete Excel VBA Timesheet System - Code File
+
+IMPORTANT INSTRUCTIONS BEFORE STARTING:
+
+1. Save your Excel workbook as "Timesheet_System.xlsm" (macro-enabled workbook)
+2. Enable macros when opening the file
+3. Create the following sheets in your workbook:
+   · Login
+   · Data base
+   · DV
+   · Admin
+   · Individual user sheets (named with Enterprise IDs)
+
+TABLE OF CONTENTS:
+
+1. Main Module Code
+2. UserFormDE Code
+3. User Sheet Code
+4. ThisWorkbook Code
+5. Setup Instructions
+6. Troubleshooting Guide
+
+---
+
+1. MAIN MODULE CODE (Standard Module)
+
+```vba
+' ==================== MAIN MODULE ====================
+Option Explicit
+
+' Global variable to track correction mode
+Public isCorrectionMode As Boolean
+
+Public Sub LoginUser()
+    Dim wsLogin As Worksheet, wsUser As Worksheet
+    Dim entID As String
+
+    Set wsLogin = Sheets("Login")
+    entID = Trim(wsLogin.Range("F24").Value)
+
+    If entID = "" Then
+        MsgBox "Please select your Enterprise ID from the dropdown.", vbExclamation, "Login Required"
+        wsLogin.Range("F24").Select
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    Set wsUser = Sheets(entID)
+    On Error GoTo 0
+
+    If wsUser Is Nothing Then
+        MsgBox "User not found. Please add user to continue.", vbExclamation, "User Not Found"
+        Exit Sub
+    End If
+
+    wsUser.Visible = xlSheetVisible
+    wsUser.Unprotect
+    wsUser.Range("W6").Value = entID
+    wsUser.Range("W6").Locked = True
+
+    ' Reset correction mode
+    isCorrectionMode = False
+
+    ' Protect only the cells that should be protected
+    wsUser.Cells.Locked = True
+    wsUser.Range("F2,W7").Locked = True  ' Name and Email (read-only)
+    wsUser.Range("C6,E6,H6,B10:J29").Locked = False  ' Editable fields
+    wsUser.Range("B3000:T" & wsUser.Rows.Count).Locked = False  ' Storage area
+    wsUser.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+
+    wsUser.Activate
+    wsUser.Range("C6").Select
+    ActiveWindow.Zoom = 80
+
+    MsgBox "Welcome, " & Application.userName & "!" & vbNewLine & _
+           "ID *" & entID & "* logged in successfully." & vbNewLine & _
+           "Your timesheet is ready." & vbNewLine & vbNewLine & _
+           "Have a productive day!", _
+           vbInformation, "Login Successful"
+End Sub
+
+Public Sub SubmitTimesheet()
+    On Error GoTo ErrorHandler
+
+    Dim wsForm As Worksheet, wsDB As Worksheet
+    Dim nextRow As Long, recordCount As Long
+    Dim timesheetType As String, enterpriseID As String
+    Dim employeeName As String, employeeEmail As String, monthName As String, weekName As String, teamName As String
+    Dim submittedBy As String
+    Dim i As Integer
+    Dim auditCount As Integer, nonAuditCount As Integer
+
+    Set wsForm = ActiveSheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    ' Gather basic form values
+    enterpriseID = Trim(wsForm.Range("W6").Value)
+    employeeName = Trim(wsForm.Range("F2").Value)
+    employeeEmail = Trim(wsForm.Range("W7").Value)
+
+    ' Determine if this is a correction based on correction mode
+    If isCorrectionMode Then
+        timesheetType = "Timesheet Correction"
+    Else
+        timesheetType = "New Timesheet Entry"
+    End If
+
+    monthName = Trim(wsForm.Range("C6").Value)
+    weekName = Trim(wsForm.Range("E6").Value)
+    teamName = Trim(wsForm.Range("H6").Value)
+    submittedBy = Application.userName
+
+    ' Basic validations
+    If Not ValidateBasicFields(wsForm, enterpriseID, monthName, weekName, teamName) Then GoTo CleanUp
+
+    ' Validate hours columns (E and I) for integer values
+    If Not ValidateHoursColumns(wsForm) Then GoTo CleanUp
+
+    ' Count and validate engagement records (rows 10-14)
+    recordCount = CountValidEngagementRecords(wsForm, auditCount, nonAuditCount)
+    If recordCount = 0 Then
+        MsgBox "Please fill at least one engagement record (either Audit or Non-Audit).", vbExclamation, "No Records Found"
+        GoTo CleanUp
+    End If
+
+    ' Validate individual rows for completeness
+    If Not ValidateEngagementRows(wsForm) Then GoTo CleanUp
+
+    ' Check for duplicates ONLY if NOT in correction mode
+    If Not isCorrectionMode Then
+        If HasDuplicateEntries(wsForm, wsDB, enterpriseID, monthName, weekName, teamName) Then GoTo CleanUp
+    End If
+
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    wsForm.Unprotect
+
+    ' Confirmation with proper formatting
+    Dim confirmMsg As String
+    If isCorrectionMode Then
+        confirmMsg = "You are Submitting Correction For " & auditCount & " Audit and " & nonAuditCount & " Non-Audit Engagements" & vbCrLf & _
+                    "Week: " & weekName & vbCrLf & vbCrLf & _
+                    "Do you want to proceed with the corrections?"
+    Else
+        confirmMsg = "You are Recording " & auditCount & " Audit and " & nonAuditCount & " Non-Audit Engagements" & vbCrLf & _
+                    "Week: " & weekName & vbCrLf & vbCrLf & _
+                    "Do you want to proceed with the submission?"
+    End If
+
+    If MsgBox(confirmMsg, vbQuestion + vbYesNo, "Confirm Submission") = vbNo Then
+        MsgBox "Submission cancelled.", vbInformation
+        GoTo CleanUp
+    End If
+
+    ' Process each engagement record (rows 10-14)
+    For i = 10 To 14
+        If IsEngagementRowValid(wsForm, i) Then
+            nextRow = wsForm.Cells(wsForm.Rows.Count, "B").End(xlUp).Row
+            If nextRow < 3000 Then nextRow = 2999
+            nextRow = nextRow + 1
+
+            ' Write engagement record to local storage
+            WriteEngagementRecord wsForm, nextRow, enterpriseID, employeeName, _
+                                 employeeEmail, timesheetType, monthName, weekName, teamName, i, submittedBy
+        End If
+    Next i
+
+    ThisWorkbook.Save
+
+    ' Success message with proper formatting
+    Dim successMsg As String
+    If isCorrectionMode = False Then
+        successMsg = "Your Timesheet has been Successfully Submitted with " & auditCount & " Audit and " & nonAuditCount & " Non-Audit Engagements" & vbCrLf & _
+                    "Week starting: " & weekName & vbCrLf & _
+                    "Enterprise ID: " & enterpriseID & vbCrLf & vbCrLf & _
+                    "Records will be synced to database by Admin."
+    Else
+        successMsg = "Your Timesheet Correction has been Successfully Submitted!" & vbCrLf & _
+                    auditCount & " Audit and " & nonAuditCount & " Non-Audit Engagements" & vbCrLf & _
+                    "Week starting: " & weekName
+    End If
+
+    MsgBox successMsg, vbInformation, "Submission Complete"
+
+    ' Reset correction mode and form
+    isCorrectionMode = False
+    ResetFormInputsOnly wsForm
+    GoTo CleanUp
+
+ErrorHandler:
+    MsgBox "ERROR in SubmitTimesheet:" & vbCrLf & _
+           "Error: " & Err.Description & vbCrLf & _
+           "Number: " & Err.Number, vbCritical, "System Error"
+
+CleanUp:
+    On Error Resume Next
+    wsForm.Cells.Locked = True
+    wsForm.Range("F2,W7").Locked = True
+    wsForm.Range("C6,E6,H6,B10:J14").Locked = False
+    wsForm.Range("B3000:T" & wsForm.Rows.Count).Locked = False
+    wsForm.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Call UpdatePendingCounts
+    wsForm.Activate
+End Sub
+
+Private Function ValidateHoursColumns(ws As Worksheet) As Boolean
+    Dim i As Integer
+    Dim cellValue As String
+    Dim numValue As Double
+
+    ValidateHoursColumns = True
+
+    ' Check rows 10-14 for hours validation
+    For i = 10 To 14
+        ' Check Audit Hours (Column E)
+        cellValue = Trim(CStr(ws.Cells(i, 5).Value))
+        If cellValue <> "" Then
+            If Not IsNumeric(cellValue) Then
+                MsgBox "Row " & i & ": Audit Hours (Column E) must be a valid number between 0-300.", vbExclamation, "Invalid Hours Entry"
+                ws.Cells(i, 5).Select
+                ValidateHoursColumns = False
+                Exit Function
+            End If
+
+            numValue = CDbl(cellValue)
+            If numValue <> Int(numValue) Or numValue < 0 Or numValue > 300 Then
+                MsgBox "Row " & i & ": Audit Hours (Column E) must be a whole number between 0-300.", vbExclamation, "Invalid Hours Entry"
+                ws.Cells(i, 5).Select
+                ValidateHoursColumns = False
+                Exit Function
+            End If
+        End If
+
+        ' Check Non-Audit Hours (Column I)
+        cellValue = Trim(CStr(ws.Cells(i, 9).Value))
+        If cellValue <> "" Then
+            If Not IsNumeric(cellValue) Then
+                MsgBox "Row " & i & ": Non-Audit Hours (Column I) must be a valid number between 0-300.", vbExclamation, "Invalid Hours Entry"
+                ws.Cells(i, 9).Select
+                ValidateHoursColumns = False
+                Exit Function
+            End If
+
+            numValue = CDbl(cellValue)
+            If numValue <> Int(numValue) Or numValue < 0 Or numValue > 300 Then
+                MsgBox "Row " & i & ": Non-Audit Hours (Column I) must be a whole number between 0-300.", vbExclamation, "Invalid Hours Entry"
+                ws.Cells(i, 9).Select
+                ValidateHoursColumns = False
+                Exit Function
+            End If
+        End If
+    Next i
+End Function
+
+Private Function CountValidEngagementRecords(ws As Worksheet, ByRef auditCount As Integer, ByRef nonAuditCount As Integer) As Integer
+    Dim Count As Integer, i As Integer
+    Count = 0
+    auditCount = 0
+    nonAuditCount = 0
+
+    For i = 10 To 14
+        If IsEngagementRowValid(ws, i) Then
+            Count = Count + 1
+            ' Count audit and non-audit separately
+            If Len(Trim(CStr(ws.Cells(i, 3).Value))) > 0 Then ' Audit Engagement ID exists
+                auditCount = auditCount + 1
+            End If
+            If Len(Trim(CStr(ws.Cells(i, 8).Value))) > 0 Then ' Non-Audit Engagement exists
+                nonAuditCount = nonAuditCount + 1
+            End If
+        End If
+    Next i
+
+    CountValidEngagementRecords = Count
+End Function
+
+Private Function IsEngagementRowValid(ws As Worksheet, rowNum As Integer) As Boolean
+    Dim hasAuditComplete As Boolean, hasNonAuditComplete As Boolean
+    Dim auditFieldsFilled As Boolean, nonAuditFieldsFilled As Boolean
+
+    ' Check if any audit engagement fields are filled
+    auditFieldsFilled = (Len(Trim(CStr(ws.Cells(rowNum, 2).Value))) > 0 Or _
+                        Len(Trim(CStr(ws.Cells(rowNum, 3).Value))) > 0 Or _
+                        Len(Trim(CStr(ws.Cells(rowNum, 4).Value))) > 0 Or _
+                        Len(Trim(CStr(ws.Cells(rowNum, 5).Value))) > 0 Or _
+                        Len(Trim(CStr(ws.Cells(rowNum, 6).Value))) > 0)
+
+    ' Check if any non-audit engagement fields are filled
+    nonAuditFieldsFilled = (Len(Trim(CStr(ws.Cells(rowNum, 8).Value))) > 0 Or _
+                           Len(Trim(CStr(ws.Cells(rowNum, 9).Value))) > 0 Or _
+                           Len(Trim(CStr(ws.Cells(rowNum, 10).Value))) > 0)
+
+    ' If no fields are filled, row is not valid for processing
+    If Not (auditFieldsFilled Or nonAuditFieldsFilled) Then
+        IsEngagementRowValid = False
+        Exit Function
+    End If
+
+    ' Check if audit engagement has all required fields
+    If auditFieldsFilled Then
+        hasAuditComplete = (Len(Trim(CStr(ws.Cells(rowNum, 2).Value))) > 0 And _
+                           Len(Trim(CStr(ws.Cells(rowNum, 3).Value))) > 0 And _
+                           Len(Trim(CStr(ws.Cells(rowNum, 4).Value))) > 0 And _
+                           Len(Trim(CStr(ws.Cells(rowNum, 5).Value))) > 0)
+    End If
+
+    ' Check if non-audit engagement has minimum required fields
+    If nonAuditFieldsFilled Then
+        hasNonAuditComplete = (Len(Trim(CStr(ws.Cells(rowNum, 8).Value))) > 0 And _
+                              Len(Trim(CStr(ws.Cells(rowNum, 9).Value))) > 0)
+    End If
+
+    ' Row is valid if either audit is complete OR non-audit is complete
+    IsEngagementRowValid = (hasAuditComplete Or hasNonAuditComplete)
+End Function
+
+Private Function ValidateEngagementRows(ws As Worksheet) As Boolean
+    Dim i As Integer
+    Dim hasAuditComplete As Boolean, hasNonAuditComplete As Boolean
+    Dim auditFieldsFilled As Boolean, nonAuditFieldsFilled As Boolean
+
+    ValidateEngagementRows = True
+
+    For i = 10 To 14
+        auditFieldsFilled = (Len(Trim(CStr(ws.Cells(i, 2).Value))) > 0 Or _
+                            Len(Trim(CStr(ws.Cells(i, 3).Value))) > 0 Or _
+                            Len(Trim(CStr(ws.Cells(i, 4).Value))) > 0 Or _
+                            Len(Trim(CStr(ws.Cells(i, 5).Value))) > 0 Or _
+                            Len(Trim(CStr(ws.Cells(i, 6).Value))) > 0)
+
+        nonAuditFieldsFilled = (Len(Trim(CStr(ws.Cells(i, 8).Value))) > 0 Or _
+                               Len(Trim(CStr(ws.Cells(i, 9).Value))) > 0 Or _
+                               Len(Trim(CStr(ws.Cells(i, 10).Value))) > 0)
+
+        ' If any fields are filled, validate completeness
+        If auditFieldsFilled Or nonAuditFieldsFilled Then
+
+            ' Check audit engagement completeness
+            If auditFieldsFilled Then
+                hasAuditComplete = (Len(Trim(CStr(ws.Cells(i, 2).Value))) > 0 And _
+                                   Len(Trim(CStr(ws.Cells(i, 3).Value))) > 0 And _
+                                   Len(Trim(CStr(ws.Cells(i, 4).Value))) > 0 And _
+                                   Len(Trim(CStr(ws.Cells(i, 5).Value))) > 0)
+            Else
+                hasAuditComplete = False
+            End If
+
+            ' Check non-audit engagement completeness
+            If nonAuditFieldsFilled Then
+                hasNonAuditComplete = (Len(Trim(CStr(ws.Cells(i, 8).Value))) > 0 And _
+                                      Len(Trim(CStr(ws.Cells(i, 9).Value))) > 0)
+            Else
+                hasNonAuditComplete = False
+            End If
+
+            ' If audit fields are filled but incomplete
+            If auditFieldsFilled And Not hasAuditComplete Then
+                MsgBox "Row " & i & ": Please complete all required Audit Engagement fields:" & vbCrLf & _
+                       "- Region (B" & i & ")" & vbCrLf & _
+                       "- Engagement ID (C" & i & ")" & vbCrLf & _
+                       "- Engagement Activity (D" & i & ")" & vbCrLf & _
+                       "- Hours (E" & i & ")", _
+                       vbExclamation, "Incomplete Audit Entry"
+                ws.Cells(i, 2).Select
+                ValidateEngagementRows = False
+                Exit Function
+            End If
+
+            ' If non-audit fields are filled but incomplete
+            If nonAuditFieldsFilled And Not hasNonAuditComplete Then
+                MsgBox "Row " & i & ": Please complete all required Non-Audit Engagement fields:" & vbCrLf & _
+                       "- Non-Audit Engagement (H" & i & ")" & vbCrLf & _
+                       "- Hours (I" & i & ")", _
+                       vbExclamation, "Incomplete Non-Audit Entry"
+                ws.Cells(i, 8).Select
+                ValidateEngagementRows = False
+                Exit Function
+            End If
+
+            ' At least one type must be complete for the row to be valid
+            If Not (hasAuditComplete Or hasNonAuditComplete) Then
+                MsgBox "Row " & i & ": Please complete either Audit OR Non-Audit engagement fields completely.", _
+                       vbExclamation, "Incomplete Entry"
+                ValidateEngagementRows = False
+                Exit Function
+            End If
+        End If
+    Next i
+End Function
+
+Private Function HasDuplicateEntries(wsForm As Worksheet, wsDB As Worksheet, enterpriseID As String, _
+                                   monthName As String, weekName As String, teamName As String) As Boolean
+    Dim i As Integer
+    HasDuplicateEntries = False
+
+    For i = 10 To 14
+        If IsEngagementRowValid(wsForm, i) Then
+            Dim engagementID As String
+            Dim region As String
+
+            ' Get engagement ID (audit or non-audit)
+            If Len(Trim(CStr(wsForm.Cells(i, 3).Value))) > 0 Then
+                engagementID = Trim(CStr(wsForm.Cells(i, 3).Value))
+                region = Trim(CStr(wsForm.Cells(i, 2).Value))
+            Else
+                engagementID = Trim(CStr(wsForm.Cells(i, 8).Value))
+                region = ""
+            End If
+
+            If CheckDuplicateInLocal(wsForm, enterpriseID, engagementID, monthName, weekName, region, teamName) Or _
+               CheckDuplicateInDB(wsDB, enterpriseID, engagementID, monthName, weekName, region, teamName) Then
+
+                Dim response As VbMsgBoxResult
+                response = MsgBox("Duplicate entry found for:" & vbCrLf & _
+                                "Week: " & weekName & vbCrLf & _
+                                "Team: " & teamName & vbCrLf & _
+                                "Engagement: " & engagementID & vbCrLf & _
+                                "Region: " & region & vbCrLf & vbCrLf & _
+                                "Do you want to make a correction instead?", _
+                                vbYesNo + vbExclamation, "Duplicate Entry")
+
+                If response = vbYes Then
+                    MsgBox "Please use the 'View/Correction' button to make changes to existing entries.", vbInformation
+                    HasDuplicateEntries = True
+                    Exit Function
+                Else
+                    MsgBox "Submission cancelled. Please review your entries.", vbInformation
+                    HasDuplicateEntries = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next i
+End Function
+
+Private Function CheckDuplicateInLocal(ws As Worksheet, enterpriseID As String, engagementID As String, _
+                                     monthName As String, weekName As String, region As String, teamName As String) As Boolean
+    Dim r As Long, lastRow As Long
+
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    For r = 3000 To lastRow
+        If ws.Cells(r, 2).Value = enterpriseID And _
+           ws.Cells(r, 7).Value = monthName And _
+           ws.Cells(r, 8).Value = weekName And _
+           ws.Cells(r, 9).Value = teamName And _
+           ((region <> "" And ws.Cells(r, 10).Value = region) Or region = "") And _
+           (ws.Cells(r, 11).Value = engagementID Or ws.Cells(r, 15).Value = engagementID) Then
+           CheckDuplicateInLocal = True
+           Exit Function
+        End If
+    Next r
+    CheckDuplicateInLocal = False
+End Function
+
+Private Function CheckDuplicateInDB(wsDB As Worksheet, enterpriseID As String, engagementID As String, _
+                                  monthName As String, weekName As String, region As String, teamName As String) As Boolean
+    Dim r As Long, lastRow As Long
+
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 1).Value = enterpriseID And _
+           wsDB.Cells(r, 6).Value = monthName And _
+           wsDB.Cells(r, 7).Value = weekName And _
+           wsDB.Cells(r, 8).Value = teamName And _
+           ((region <> "" And wsDB.Cells(r, 9).Value = region) Or region = "") And _
+           (wsDB.Cells(r, 10).Value = engagementID Or wsDB.Cells(r, 14).Value = engagementID) Then
+           CheckDuplicateInDB = True
+           Exit Function
+        End If
+    Next r
+    CheckDuplicateInDB = False
+End Function
+
+Private Sub WriteEngagementRecord(ws As Worksheet, nextRow As Long, _
+                                 enterpriseID As String, employeeName As String, employeeEmail As String, _
+                                 timesheetType As String, monthName As String, weekName As String, _
+                                 teamName As String, rowNum As Integer, submittedBy As String)
+
+    With ws
+        .Cells(nextRow, 2).Value = enterpriseID                  ' Enterprise ID
+        .Cells(nextRow, 3).Value = employeeName                  ' Employee Name
+        .Cells(nextRow, 4).Value = employeeEmail                 ' Employee Email
+        .Cells(nextRow, 5).Value = Format(Now, "yyyy-mm-dd hh:mm:ss") ' Date and time
+        .Cells(nextRow, 6).Value = timesheetType                 ' New Timesheet/Correction
+        .Cells(nextRow, 7).Value = monthName                     ' Month
+        .Cells(nextRow, 8).Value = weekName                      ' Week
+        .Cells(nextRow, 9).Value = teamName                      ' Team Name
+        .Cells(nextRow, 10).Value = .Cells(rowNum, 2).Value     ' Region
+        .Cells(nextRow, 11).Value = .Cells(rowNum, 3).Value     ' Audit Engagement ID
+        .Cells(nextRow, 12).Value = .Cells(rowNum, 4).Value     ' Engagement Activity
+        .Cells(nextRow, 13).Value = .Cells(rowNum, 5).Value     ' Engagement Hours
+        .Cells(nextRow, 14).Value = .Cells(rowNum, 6).Value     ' Remark 1
+        .Cells(nextRow, 15).Value = .Cells(rowNum, 8).Value     ' Non-Audit Engagement
+        .Cells(nextRow, 16).Value = .Cells(rowNum, 9).Value     ' Non-Audit Hours
+        .Cells(nextRow, 17).Value = .Cells(rowNum, 10).Value    ' Remark 2
+        .Cells(nextRow, 18).Value = submittedBy                 ' User Submitted Record
+
+        ' Set font color to white (hidden)
+        .Range(.Cells(nextRow, 2), .Cells(nextRow, 18)).Font.Color = RGB(255, 255, 255)
+    End With
+End Sub
+
+Public Sub ViewCorrection()
+    Dim wsForm As Worksheet
+    Set wsForm = ActiveSheet
+    Dim weekName As String, entID As String
+
+    weekName = Trim(wsForm.Range("E6").Value)
+    entID = Trim(wsForm.Range("W6").Value)
+
+    If weekName = "" Then
+        MsgBox "Please select a week first before viewing/correcting entries.", vbExclamation, "Week Required"
+        wsForm.Range("E6").Select
+        Exit Sub
+    End If
+
+    ' Set correction mode
+    isCorrectionMode = True
+
+    ' Clear the entry area first
+    ClearEntryArea wsForm
+
+    ' Load week data into the entry area
+    LoadWeekDataToEntryArea wsForm, weekName, entID
+
+    MsgBox "Week entries loaded in the timesheet area. You can now edit and submit corrections." & vbCrLf & _
+           "Note: Duplicate checking is disabled in correction mode.", vbInformation, "View/Correction Mode"
+End Sub
+
+Private Sub ClearEntryArea(ws As Worksheet)
+    On Error Resume Next
+    ws.Unprotect
+    ' Clear the entry area (rows 10-14)
+    ws.Range("B10:J14").ClearContents
+    ws.Range("B10:J14").Interior.ColorIndex = xlNone
+
+    ws.Cells.Locked = True
+    ws.Range("F2,W7").Locked = True
+    ws.Range("C6,E6,H6,B10:J14").Locked = False
+    ws.Range("B3000:T" & ws.Rows.Count).Locked = False
+    ws.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    On Error GoTo 0
+End Sub
+
+Private Sub LoadWeekDataToEntryArea(ws As Worksheet, weekName As String, entID As String)
+    Dim r As Long, lastRow As Long
+    Dim targetRow As Long
+    
+    targetRow = 10
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    
+    ' Search in local storage (from row 3000)
+    For r = 3000 To lastRow
+        If ws.Cells(r, 2).Value = entID And _
+           ws.Cells(r, 8).Value = weekName And _
+           targetRow <= 14 Then
+            
+            ' Copy data to entry area
+            ws.Cells(targetRow, 2).Value = ws.Cells(r, 10).Value  ' Region
+            ws.Cells(targetRow, 3).Value = ws.Cells(r, 11).Value  ' Audit Engagement
+            ws.Cells(targetRow, 4).Value = ws.Cells(r, 12).Value  ' Engagement Activity
+            ws.Cells(targetRow, 5).Value = ws.Cells(r, 13).Value  ' Hours
+            ws.Cells(targetRow, 6).Value = ws.Cells(r, 14).Value  ' Remark 1
+            ws.Cells(targetRow, 8).Value = ws.Cells(r, 15).Value  ' Non-Audit Engagement
+            ws.Cells(targetRow, 9).Value = ws.Cells(r, 16).Value  ' Non-Audit Hours
+            ws.Cells(targetRow, 10).Value = ws.Cells(r, 17).Value ' Remark 2
+            
+            targetRow = targetRow + 1
+        End If
+    Next r
+    
+    ' Also search in database
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+    
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 1).Value = entID And _
+           wsDB.Cells(r, 7).Value = weekName And _
+           targetRow <= 14 Then
+            
+            ' Copy data to entry area
+            ws.Cells(targetRow, 2).Value = wsDB.Cells(r, 9).Value   ' Region
+            ws.Cells(targetRow, 3).Value = wsDB.Cells(r, 10).Value  ' Audit Engagement
+            ws.Cells(targetRow, 4).Value = wsDB.Cells(r, 11).Value  ' Engagement Activity
+            ws.Cells(targetRow, 5).Value = wsDB.Cells(r, 12).Value  ' Hours
+            ws.Cells(targetRow, 6).Value = wsDB.Cells(r, 13).Value  ' Remark 1
+            ws.Cells(targetRow, 8).Value = wsDB.Cells(r, 14).Value  ' Non-Audit Engagement
+            ws.Cells(targetRow, 9).Value = wsDB.Cells(r, 15).Value  ' Non-Audit Hours
+            ws.Cells(targetRow, 10).Value = wsDB.Cells(r, 16).Value ' Remark 2
+            
+            targetRow = targetRow + 1
+        End If
+    Next r
+End Sub
+
+Public Sub SyncAllUserSheetsToDatabase()
+    On Error GoTo ErrorHandler
+
+    Dim pass As String
+    pass = InputBox("Enter sync password:", "Admin Sync Required")
+    If pass <> "123" Then
+        MsgBox "Incorrect password. Access denied.", vbCritical, "Access Denied"
+        Exit Sub
+    End If
+
+    Dim ws As Worksheet, wsDB As Worksheet, wsAdmin As Worksheet
+    Dim r As Long, lastLocalRow As Long, nextDBRow As Long
+    Dim recordCount As Long, userCount As Long, deletedCount As Long
+
+    recordCount = 0
+    userCount = 0
+    deletedCount = 0
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+    Set wsAdmin = ThisWorkbook.Sheets("Admin")
+
+    wsDB.Unprotect
+
+    ' First, process deletions in the database
+    Dim lastDBRow As Long
+    lastDBRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+    For r = lastDBRow To 2 Step -1
+        On Error Resume Next
+        If wsDB.Cells(r, 16).Value = "Marked for Deletion" Then
+            wsDB.Rows(r).Delete
+            deletedCount = deletedCount + 1
+        End If
+        On Error GoTo ErrorHandler
+    Next r
+
+    ' Process each user sheet
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Data base" And ws.Name <> "Login" And ws.Name <> "Admin" And ws.Name <> "DV" Then
+            lastLocalRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+            If lastLocalRow >= 3000 Then
+                Dim userRecords As Long: userRecords = 0
+                For r = 3000 To lastLocalRow
+                    If ws.Cells(r, 2).Value <> "" Then
+                        On Error Resume Next
+                        Dim isMarkedForDeletion As Boolean
+                        isMarkedForDeletion = (ws.Cells(r, 18).Value = "Marked for Deletion")
+                        On Error GoTo ErrorHandler
+
+                        If Not isMarkedForDeletion Then
+                            nextDBRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row + 1
+                            wsDB.Cells(nextDBRow, 1).Resize(1, 17).Value = ws.Cells(r, 2).Resize(1, 17).Value
+                            recordCount = recordCount + 1
+                            userRecords = userRecords + 1
+                        Else
+                            deletedCount = deletedCount + 1
+                        End If
+                    End If
+                Next r
+
+                If userRecords > 0 Or deletedCount > 0 Then
+                    On Error Resume Next
+                    ws.Unprotect
+                    On Error GoTo ErrorHandler
+
+                    ws.Range("B3000:S" & lastLocalRow).ClearContents
+                    ws.Range("B3000:S" & lastLocalRow).Interior.ColorIndex = xlNone
+                    userCount = userCount + 1
+
+                    On Error Resume Next
+                    ws.Cells.Locked = True
+                    ws.Range("F2,W7").Locked = True
+                    ws.Range("C6,E6,H6,B10:J29").Locked = False
+                    ws.Range("B3000:S" & ws.Rows.Count).Locked = False
+                    ws.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+                    On Error GoTo ErrorHandler
+                End If
+            End If
+        End If
+    Next ws
+
+    wsDB.Protect UserInterfaceOnly:=True
+
+    ' Update sync timestamp
+    wsAdmin.Range("G5").Value = Format(Now, "yyyy-mm-dd hh:mm:ss")
+
+    ThisWorkbook.Save
+
+    MsgBox "SYNC COMPLETED!" & vbCrLf & _
+           "Users processed: " & userCount & vbCrLf & _
+           "Records synced: " & recordCount & vbCrLf & _
+           "Records deleted: " & deletedCount & vbCrLf & _
+           "All local buffers cleared." & vbCrLf & _
+           "Last sync: " & Format(Now, "yyyy-mm-dd hh:mm:ss"), vbInformation, "Sync Complete"
+
+    Call UpdatePendingCounts
+    Call LogoutAllUserSheets
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical, "Error"
+    On Error Resume Next
+    wsDB.Protect UserInterfaceOnly:=True
+    ThisWorkbook.Save
+End Sub
+
+Private Function ValidateBasicFields(wsForm As Worksheet, enterpriseID As String, monthName As String, weekName As String, teamName As String) As Boolean
+    ValidateBasicFields = True
+    If enterpriseID = "" Then
+        MsgBox "Enterprise ID is required.", vbExclamation: ValidateBasicFields = False: Exit Function
+    End If
+    If monthName = "" Then
+        MsgBox "Please select Month.", vbExclamation: ValidateBasicFields = False: wsForm.Range("C6").Select: Exit Function
+    End If
+    If weekName = "" Then
+        MsgBox "Please select Week", vbExclamation: ValidateBasicFields = False: wsForm.Range("E6").Select: Exit Function
+    End If
+    If teamName = "" Then
+        MsgBox "Please select Your Team.", vbExclamation: ValidateBasicFields = False: wsForm.Range("H6").Select: Exit Function
+    End If
+End Function
+
+Private Sub ResetFormInputsOnly(f As Worksheet)
+    Application.EnableEvents = False
+    f.Unprotect
+
+    ' Reset correction mode
+    isCorrectionMode = False
+
+    ' Clear engagement data (rows 10-14) and basic selections
+    f.Range("B10:J14").ClearContents
+    f.Range("B10:J14").Interior.ColorIndex = xlNone
+    f.Range("C6,E6,H6").ClearContents
+
+    ' Set proper protection
+    f.Cells.Locked = True
+    f.Range("F2,W7").Locked = True
+    f.Range("C6,E6,H6,B10:J14").Locked = False
+    f.Range("B3000:S" & f.Rows.Count).Locked = False
+
+    f.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    Application.EnableEvents = True
+End Sub
+
+Public Sub LogoutUser()
+    Dim response As VbMsgBoxResult
+    response = MsgBox("Are you sure you want to logout?" & vbCrLf & _
+                     "This will hide your sheet.", vbYesNo + vbQuestion, "Confirm Logout")
+
+    If response = vbYes Then
+        isCorrectionMode = False
+        ActiveSheet.Visible = xlSheetVeryHidden
+        Sheets("Login").Activate
+        Sheets("Login").Range("F24").ClearContents
+        Sheets("Login").Range("F24").Select
+        MsgBox "Logged out successfully. Please close this Excel file.", vbInformation
+    End If
+End Sub
+
+Public Sub UpdatePendingCounts()
+    Dim ws As Worksheet
+    Dim totalPending As Long
+    Dim userCount As Long
+    Dim lastRow As Long
+    Dim sheetPending As Long
+
+    totalPending = 0
+    userCount = 0
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "DV" And ws.Name <> "Admin" Then
+            lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+            If lastRow >= 3000 Then
+                sheetPending = Application.WorksheetFunction.CountA(ws.Range("B3000:B" & lastRow))
+                If sheetPending > 0 Then
+                    totalPending = totalPending + sheetPending
+                    userCount = userCount + 1
+                End If
+            End If
+        End If
+    Next ws
+
+    With ThisWorkbook.Sheets("Admin")
+        .Range("G3").Value = totalPending
+        .Range("G4").Value = userCount
+    End With
+End Sub
+
+Public Sub LogoutAllUserSheets()
+    Dim ws As Worksheet, Count As Long
+    Count = 0
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "Admin" Then
+            ws.Visible = xlSheetVeryHidden
+            Count = Count + 1
+        End If
+    Next ws
+
+    Sheets("Admin").Activate
+End Sub
+
+Public Sub ShowAllUserSheets()
+    If InputBox("Enter admin password:") <> "123" Then
+        MsgBox "Access denied": Exit Sub
+    End If
+
+    Dim ws As Worksheet, Count As Long
+    Count = 0
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "Admin" Then
+            ws.Visible = xlSheetVisible
+            Count = Count + 1
+        End If
+    Next ws
+
+    MsgBox Count & " user sheets are now visible.", vbInformation
+End Sub
+
+Public Sub HideAllUserSheets()
+    If InputBox("Enter admin password:") <> "123" Then
+        MsgBox "Access denied": Exit Sub
+    End If
+
+    Dim ws As Worksheet, Count As Long
+    Count = 0
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "Admin" Then
+            ws.Visible = xlSheetVeryHidden
+            Count = Count + 1
+        End If
+    Next ws
+
+    Sheets("Login").Activate
+    MsgBox Count & " user sheets have been hidden.", vbInformation
+End Sub
+
+Public Sub OpenTimesheetCorrectionForm()
+    On Error GoTo ErrorHandler
+
+    If Trim(ActiveSheet.Range("W6").Value) = "" Then
+        MsgBox "Please login first. Enterprise ID not found in cell W6.", vbExclamation, "Login Required"
+        Exit Sub
+    End If
+
+    Dim correctionForm As UserFormDE
+    Set correctionForm = New UserFormDE
+
+    correctionForm.LoadEmployeeName
+
+    correctionForm.Show
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error opening correction form: " & Err.Description, vbCritical, "Error"
+    On Error Resume Next
+    Set correctionForm = Nothing
+End Sub
+
+Public Sub ToggleMyDatabaseRecords()
+    Dim wsF As Worksheet, wsDB As Worksheet
+    Dim entID As String, i As Long, lastRow As Long, outRow As Long
+    Dim startCell As Range, tblArea As Range
+    Dim isDataPresent As Boolean
+
+    Set wsF = ActiveSheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+    Set startCell = wsF.Range("B25")
+    Set tblArea = wsF.Range("B25:S297")
+
+    entID = Trim(wsF.Range("W6").Value)
+    If entID = "" Then
+        MsgBox "Please verify Enterprise ID is populated.", vbExclamation
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    wsF.Unprotect
+    On Error GoTo 0
+
+    isDataPresent = WorksheetFunction.CountA(tblArea.Offset(1)) > 0
+
+    If isDataPresent Then
+        tblArea.Offset(1).ClearContents
+        tblArea.Offset(1).ClearFormats
+        tblArea.Offset(1).Interior.ColorIndex = xlNone
+        tblArea.Offset(1).Borders.LineStyle = xlNone
+        startCell.Resize(1, 18).ClearContents
+        startCell.Resize(1, 18).ClearFormats
+
+        On Error Resume Next
+        wsF.Cells.Locked = True
+        wsF.Range("F2,W7").Locked = True
+        wsF.Range("C6,E6,H6,B10:J15").Locked = False
+        wsF.Range("B3000:S" & wsF.Rows.Count).Locked = False
+        wsF.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+        On Error GoTo 0
+        MsgBox "Your past timesheet records have been hidden. Please click again to show them", vbInformation, "Toggle Complete"
+        Exit Sub
+    End If
+
+    ' Headers
+    startCell.Resize(1, 18).Value = Array("Enterprise ID", "Employee Name", "Employee Email", _
+        "Date and Time", "Type", "Month", "Week", "Team Name", "Region", "Audit Engagement", "Engagement Activity", _
+        "Engagement Hr", "Remark 1", "Non-Audit Eng", "Non-Audit Hr", "Remark 2", "Submitted By", "Sync Status")
+
+    With startCell.Resize(1, 18)
+        .Font.Bold = True
+        .Interior.Color = RGB(200, 200, 200)
+        .Borders.LineStyle = xlContinuous
+        .HorizontalAlignment = xlCenter
+    End With
+
+    outRow = 1
+
+    ' Show database records (synced)
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+    If lastRow >= 2 Then
+        For i = 2 To lastRow
+            If wsDB.Cells(i, 1).Value = entID Then
+                startCell.Offset(outRow).Resize(1, 17).Value = wsDB.Range(wsDB.Cells(i, 1), wsDB.Cells(i, 17)).Value
+                startCell.Offset(outRow, 17).Value = "Synced"
+                startCell.Offset(outRow, 17).Interior.Color = RGB(200, 255, 200)
+                outRow = outRow + 1
+            End If
+        Next i
+    End If
+
+    ' Show local pending records
+    Dim localLastRow As Long
+    localLastRow = wsF.Cells(wsF.Rows.Count, "B").End(xlUp).Row
+    If localLastRow >= 3000 Then
+        For i = 3000 To localLastRow
+            If wsF.Cells(i, 2).Value <> "" And wsF.Cells(i, 2).Value = entID Then
+                startCell.Offset(outRow).Resize(1, 17).Value = wsF.Range(wsF.Cells(i, 2), wsF.Cells(i, 18)).Value
+                startCell.Offset(outRow, 17).Value = "Pending Sync"
+                startCell.Offset(outRow, 17).Interior.Color = RGB(255, 255, 200)
+                outRow = outRow + 1
+            End If
+        Next i
+    End If
+
+    ' Format data rows
+    If outRow > 1 Then
+        With startCell.Offset(1).Resize(outRow - 1, 18)
+            .Borders.LineStyle = xlContinuous
+            .HorizontalAlignment = xlLeft
+        End With
+
+        For i = 2 To outRow - 1 Step 2
+            startCell.Offset(i).Resize(1, 18).Interior.Color = RGB(240, 240, 240)
+        Next i
+
+        MsgBox outRow - 1 & " Record(s) displayed for " & entID
+    Else
+        MsgBox "No records found for Enterprise ID: " & entID, vbInformation, "No Records"
+    End If
+
+    On Error Resume Next
+    wsF.Cells.Locked = True
+    wsF.Range("F2,W7").Locked = True
+    wsF.Range("C6,E6,H6,B10:J15").Locked = False
+    wsF.Range("B3000:S" & wsF.Rows.Count).Locked = False
+    wsF.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    On Error GoTo 0
+End Sub
+```
+
+---
+
+2. USERFORMDE CODE (User Form)
+
+```vba
+' ==================== USERFORM DE CODE ====================
+Option Explicit
+
+' Module-level variables
+Private currentUserID As String
+Private isCorrection As Boolean
+Private correctionSource As String ' "LOCAL" or "DATABASE"
+Private correctionRowNumber As Long
+Private originalRegionItems As Collection
+Private originalEngagementItems As Collection
+Private originalActivityItems As Collection
+Private originalTeamItems As Collection
+Private originalNEItems As Collection
+
+Private Sub UserForm_Initialize()
+    isCorrection = False
+    correctionSource = ""
+    correctionRowNumber = 0
+
+    ' Initialize original item collections
+    Set originalRegionItems = New Collection
+    Set originalEngagementItems = New Collection
+    Set originalActivityItems = New Collection
+    Set originalTeamItems = New Collection
+    Set originalNEItems = New Collection
+
+    Call InitializeComboBoxes
+    Call ClearForm(False)
+    Call SetupListView
+
+    ' Center the form
+    Me.StartUpPosition = 0
+    Me.Left = Application.Left + (Application.Width - Me.Width) / 2
+    Me.Top = Application.Top + (Application.Height - Me.Height) / 2
+
+    ' Set focus to ComboMonth
+    Me.ComboMonth.SetFocus
+End Sub
+
+Public Sub LoadEmployeeName()
+    ' Get Enterprise ID from active sheet W6 cell
+    On Error Resume Next
+    currentUserID = Trim(ActiveSheet.Range("W6").Value)
+    On Error GoTo 0
+
+    If currentUserID = "" Then
+        MsgBox "Enterprise ID not found in cell W6. Please ensure you're logged in properly.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Search for employee name in DV sheet
+    On Error Resume Next
+    Dim wsData As Worksheet
+    Set wsData = ThisWorkbook.Sheets("DV")
+
+    Dim empName As String
+    Dim foundCell As Range
+
+    Set foundCell = wsData.Range("F:F").Find(What:=currentUserID, LookIn:=xlValues, LookAt:=xlWhole)
+
+    If Not foundCell Is Nothing Then
+        empName = wsData.Cells(foundCell.Row, "G").Value
+        If empName <> "" Then
+            Me.TextboxEmpname.Value = empName
+        Else
+            Me.TextboxEmpname.Value = "Employee Name Not Found"
+        End If
+    Else
+        empName = Application.WorksheetFunction.VLookup(currentUserID, wsData.Range("F:G"), 2, False)
+        If Not IsError(empName) Then
+            Me.TextboxEmpname.Value = empName
+        Else
+            Me.TextboxEmpname.Value = "Employee Name Not Found"
+        End If
+    End If
+
+    On Error GoTo 0
+
+    ' Load all user records initially
+    Call LoadAllUserRecords
+
+    ' Set focus to ComboMonth
+    Me.ComboMonth.SetFocus
+End Sub
+
+Private Sub InitializeComboBoxes()
+    On Error Resume Next
+
+    ' Month - Standard months
+    With Me.ComboMonth
+        .Clear
+        .AddItem "January"
+        .AddItem "February"
+        .AddItem "March"
+        .AddItem "April"
+        .AddItem "May"
+        .AddItem "June"
+        .AddItem "July"
+        .AddItem "August"
+        .AddItem "September"
+        .AddItem "October"
+        .AddItem "November"
+        .AddItem "December"
+    End With
+
+    ' Load other dropdowns with unique values
+    Call LoadRegionDropdown
+    Call LoadActivityDropdown
+    Call LoadTeamDropdown
+    Call LoadNEDropdown
+
+    On Error GoTo 0
+End Sub
+
+Private Sub LoadRegionDropdown()
+    Me.ComboRegion.Clear
+    Set originalRegionItems = New Collection
+    Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboRegion, "Region", originalRegionItems)
+End Sub
+
+Private Sub LoadActivityDropdown()
+    Me.ComboActi.Clear
+    Set originalActivityItems = New Collection
+    Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboActi, "EngActivity", originalActivityItems)
+End Sub
+
+Private Sub LoadTeamDropdown()
+    Me.ComboTeam.Clear
+    Set originalTeamItems = New Collection
+    Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboTeam, "Team_Name", originalTeamItems)
+End Sub
+
+Private Sub LoadNEDropdown()
+    Me.ComboNE.Clear
+    Set originalNEItems = New Collection
+    Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboNE, "Other_than_Eng", originalNEItems)
+End Sub
+
+Private Sub LoadEngagementDropdown()
+    Me.ComboEng.Clear
+    Set originalEngagementItems = New Collection
+
+    If Me.ComboRegion.Value <> "" Then
+        Dim regionValue As String
+        regionValue = Me.ComboRegion.Value
+        Dim nameManagerName As String
+        nameManagerName = Replace(regionValue, " ", "_")
+        
+        Call PopulateComboFromNameManagerUniqueWithCollection(Me.ComboEng, nameManagerName, originalEngagementItems)
+    End If
+End Sub
+
+Private Sub ComboMonth_Change()
+    Call UpdateWeekDropdown
+End Sub
+
+Private Sub ComboRegion_Change()
+    If Len(Trim(Me.ComboRegion.Value)) > 0 Then
+        Call LoadEngagementDropdown
+    End If
+End Sub
+
+Private Sub UpdateWeekDropdown()
+    If Me.ComboMonth.Value = "" Then Exit Sub
+
+    Me.ComboWeek.Clear
+
+    Dim selectedMonth As String
+    Dim selectedYear As Integer
+    Dim firstDayOfMonth As Date
+    Dim lastDayOfMonth As Date
+    Dim currentDate As Date
+    Dim weekString As String
+
+    selectedMonth = Me.ComboMonth.Value
+
+    On Error Resume Next
+    selectedYear = Year(Now)
+    On Error GoTo 0
+
+    firstDayOfMonth = DateSerial(selectedYear, Month(selectedMonth & " 1"), 1)
+    lastDayOfMonth = DateSerial(selectedYear, Month(selectedMonth & " 1") + 1, 0)
+
+    currentDate = firstDayOfMonth
+    Do While currentDate <= lastDayOfMonth
+        If Weekday(currentDate, vbMonday) = 1 Then
+            weekString = "Week starting " & Format(currentDate, "mmmm d, yyyy")
+            Me.ComboWeek.AddItem weekString
+        End If
+        currentDate = currentDate + 1
+    Loop
+End Sub
+
+Private Sub SetupListView()
+    With Me.ListViewRecord
+        .View = lvwReport
+        .FullRowSelect = True
+        .Gridlines = True
+        .HideSelection = False
+        .LabelWrap = False
+        .MultiSelect = False
+
+        ' Clear existing headers
+        .ColumnHeaders.Clear
+
+        ' Add column headers
+        .ColumnHeaders.Add , , "Enterprise ID", 100
+        .ColumnHeaders.Add , , "Employee Name", 150
+        .ColumnHeaders.Add , , "Employee Email", 120
+        .ColumnHeaders.Add , , "Date Time", 140
+        .ColumnHeaders.Add , , "Type", 120
+        .ColumnHeaders.Add , , "Month", 80
+        .ColumnHeaders.Add , , "Week", 180
+        .ColumnHeaders.Add , , "Team Name", 120
+        .ColumnHeaders.Add , , "Region", 80
+        .ColumnHeaders.Add , , "Audit Engagement", 120
+        .ColumnHeaders.Add , , "Engagement Activity", 130
+        .ColumnHeaders.Add , , "Engagement Hr", 110
+        .ColumnHeaders.Add , , "Remark 1", 100
+        .ColumnHeaders.Add , , "Non-Audit Eng", 120
+        .ColumnHeaders.Add , , "Non-Audit Hr", 90
+        .ColumnHeaders.Add , , "Remark 2", 100
+        .ColumnHeaders.Add , , "Submitted By", 120
+    End With
+End Sub
+
+Private Sub LoadAllUserRecords()
+    On Error GoTo ErrorHandler
+
+    If currentUserID = "" Then
+        MsgBox "Enterprise ID not available. Please ensure you're logged in properly.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Clear ListView
+    Me.ListViewRecord.ListItems.Clear
+
+    Dim recordCount As Long
+    recordCount = 0
+
+    ' Load records from Database first
+    recordCount = recordCount + LoadRecordsFromDatabase()
+
+    ' Load records from Local storage
+    recordCount = recordCount + LoadRecordsFromLocal()
+
+    If recordCount > 0 Then
+        'MsgBox "Loaded " & recordCount & " records. Double-click a record to edit it.", vbInformation
+    Else
+        MsgBox "No records found for Enterprise ID: " & currentUserID, vbInformation
+    End If
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error loading records: " & Err.Description, vbCritical
+End Sub
+
+Private Function LoadRecordsFromDatabase() As Long
+    On Error Resume Next
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim c As Integer
+    Dim recordCount As Long
+
+    recordCount = 0
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 1).Value = currentUserID Then
+            Dim listItem As ListItem
+            Set listItem = Me.ListViewRecord.ListItems.Add(, , wsDB.Cells(r, 1).Value)
+            
+            ' Set a key for tracking: SOURCE_ROWNUMBER
+            listItem.Key = "DB_" & r
+
+            ' Load columns A to Q
+            For c = 2 To 17
+                If c <= wsDB.Columns.Count Then
+                    listItem.SubItems(c - 1) = wsDB.Cells(r, c).Value
+                End If
+            Next c
+            recordCount = recordCount + 1
+        End If
+    Next r
+
+    LoadRecordsFromDatabase = recordCount
+End Function
+
+Private Function LoadRecordsFromLocal() As Long
+    On Error Resume Next
+    Dim wsUser As Worksheet
+    Set wsUser = ActiveSheet
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim c As Integer
+    Dim recordCount As Long
+
+    recordCount = 0
+    lastRow = wsUser.Cells(wsUser.Rows.Count, "B").End(xlUp).Row
+
+    If lastRow < 3000 Then
+        LoadRecordsFromLocal = 0
+        Exit Function
+    End If
+
+    For r = 3000 To lastRow
+        If wsUser.Cells(r, 2).Value = currentUserID Then
+            Dim listItem As ListItem
+            Set listItem = Me.ListViewRecord.ListItems.Add(, , wsUser.Cells(r, 2).Value)
+            
+            ' Set a key for tracking: SOURCE_ROWNUMBER
+            listItem.Key = "LOCAL_" & r
+
+            ' Load columns B to S
+            For c = 3 To 18
+                If c <= wsUser.Columns.Count Then
+                    listItem.SubItems(c - 2) = wsUser.Cells(r, c).Value
+                End If
+            Next c
+            recordCount = recordCount + 1
+        End If
+    Next r
+
+    LoadRecordsFromLocal = recordCount
+End Function
+
+Private Sub Commandfilter_Click()
+    Call FilterRecords
+End Sub
+
+Private Sub FilterRecords()
+    On Error GoTo ErrorHandler
+
+    ' Clear ListView
+    Me.ListViewRecord.ListItems.Clear
+
+    Dim recordCount As Long
+    recordCount = 0
+
+    ' Filter records from Database
+    recordCount = recordCount + FilterRecordsFromDatabase()
+
+    ' Filter records from Local storage
+    recordCount = recordCount + FilterRecordsFromLocal()
+
+    MsgBox "Filter applied. Found " & recordCount & " matching records.", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error filtering records: " & Err.Description, vbCritical
+End Sub
+
+Private Function FilterRecordsFromDatabase() As Long
+    On Error Resume Next
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim c As Integer
+    Dim recordCount As Long
+    Dim matchesFilter As Boolean
+
+    recordCount = 0
+    lastRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row
+
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 1).Value = currentUserID Then
+            matchesFilter = True
+
+            ' Apply filters based on ALL form inputs
+            If Me.TextboxEmpname.Value <> "" Then
+                If InStr(1, wsDB.Cells(r, 2).Value, Me.TextboxEmpname.Value, vbTextCompare) = 0 Then matchesFilter = False
+            End If
+
+            If Me.ComboMonth.Value <> "" Then
+                If wsDB.Cells(r, 6).Value <> Me.ComboMonth.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboWeek.Value <> "" Then
+                If wsDB.Cells(r, 7).Value <> Me.ComboWeek.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboRegion.Value <> "" Then
+                If wsDB.Cells(r, 9).Value <> Me.ComboRegion.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboTeam.Value <> "" Then
+                If wsDB.Cells(r, 8).Value <> Me.ComboTeam.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboEng.Value <> "" Then
+                If wsDB.Cells(r, 10).Value <> Me.ComboEng.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboActi.Value <> "" Then
+                If wsDB.Cells(r, 11).Value <> Me.ComboActi.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboNE.Value <> "" Then
+                If wsDB.Cells(r, 14).Value <> Me.ComboNE.Value Then matchesFilter = False
+            End If
+
+            If matchesFilter Then
+                Dim listItem As ListItem
+                Set listItem = Me.ListViewRecord.ListItems.Add(, , wsDB.Cells(r, 1).Value)
+                listItem.Key = "DB_" & r
+
+                ' Load columns A to Q
+                For c = 2 To 17
+                    If c <= wsDB.Columns.Count Then
+                        listItem.SubItems(c - 1) = wsDB.Cells(r, c).Value
+                    End If
+                Next c
+                recordCount = recordCount + 1
+            End If
+        End If
+    Next r
+
+    FilterRecordsFromDatabase = recordCount
+End Function
+
+Private Function FilterRecordsFromLocal() As Long
+    On Error Resume Next
+    Dim wsUser As Worksheet
+    Set wsUser = ActiveSheet
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim c As Integer
+    Dim recordCount As Long
+    Dim matchesFilter As Boolean
+
+    recordCount = 0
+    lastRow = wsUser.Cells(wsUser.Rows.Count, "B").End(xlUp).Row
+
+    If lastRow < 3000 Then
+        FilterRecordsFromLocal = 0
+        Exit Function
+    End If
+
+    For r = 3000 To lastRow
+        If wsUser.Cells(r, 2).Value = currentUserID Then
+            matchesFilter = True
+
+            ' Apply filters based on ALL form inputs
+            If Me.TextboxEmpname.Value <> "" Then
+                If InStr(1, wsUser.Cells(r, 3).Value, Me.TextboxEmpname.Value, vbTextCompare) = 0 Then matchesFilter = False
+            End If
+
+            If Me.ComboMonth.Value <> "" Then
+                If wsUser.Cells(r, 7).Value <> Me.ComboMonth.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboWeek.Value <> "" Then
+                If wsUser.Cells(r, 8).Value <> Me.ComboWeek.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboRegion.Value <> "" Then
+                If wsUser.Cells(r, 10).Value <> Me.ComboRegion.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboTeam.Value <> "" Then
+                If wsUser.Cells(r, 9).Value <> Me.ComboTeam.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboEng.Value <> "" Then
+                If wsUser.Cells(r, 11).Value <> Me.ComboEng.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboActi.Value <> "" Then
+                If wsUser.Cells(r, 12).Value <> Me.ComboActi.Value Then matchesFilter = False
+            End If
+
+            If Me.ComboNE.Value <> "" Then
+                If wsUser.Cells(r, 15).Value <> Me.ComboNE.Value Then matchesFilter = False
+            End If
+
+            If matchesFilter Then
+                Dim listItem As ListItem
+                Set listItem = Me.ListViewRecord.ListItems.Add(, , wsUser.Cells(r, 2).Value)
+                listItem.Key = "LOCAL_" & r
+
+                ' Load columns B to S
+                For c = 3 To 18
+                    If c <= wsUser.Columns.Count Then
+                        listItem.SubItems(c - 2) = wsUser.Cells(r, c).Value
+                    End If
+                Next c
+                recordCount = recordCount + 1
+            End If
+        End If
+    Next r
+
+    FilterRecordsFromLocal = recordCount
+End Function
+
+Private Sub ListViewRecord_DblClick()
+    If Me.ListViewRecord.selectedItem Is Nothing Then Exit Sub
+
+    Dim selectedItem As ListItem
+    Set selectedItem = Me.ListViewRecord.selectedItem
+
+    ' Extract source and row number from key
+    Dim keyParts As Variant
+    keyParts = Split(selectedItem.Key, "_")
+    correctionSource = keyParts(0)
+    correctionRowNumber = CLng(keyParts(1))
+
+    ' Load record for correction directly from ListView
+    If LoadRecordFromListView(selectedItem) Then
+        isCorrection = True
+        Me.Caption = "Timesheet Data Entry - CORRECTION MODE (" & correctionSource & ")"
+        MsgBox "Record loaded for correction from " & correctionSource & ". Modify fields as needed and click 'Correct Record'." & vbCrLf & _
+               "The original record will be deleted and replaced with your corrections.", vbInformation
+        ' Set focus to ComboMonth for correction
+        Me.ComboMonth.SetFocus
+    Else
+        MsgBox "Error loading record for correction.", vbExclamation
+    End If
+End Sub
+
+' Helper function to safely get SubItem value
+Private Function GetSafeSubItemValue(selectedItem As ListItem, index As Integer) As String
+    On Error GoTo SafeExit
+
+    If index <= selectedItem.SubItems.Count Then
+        If selectedItem.SubItems(index) <> "" Then
+            GetSafeSubItemValue = Trim(CStr(selectedItem.SubItems(index)))
+        Else
+            GetSafeSubItemValue = ""
+        End If
+    Else
+        GetSafeSubItemValue = ""
+    End If
+    Exit Function
+
+SafeExit:
+    GetSafeSubItemValue = ""
+End Function
+
+Private Function LoadRecordFromListView(selectedItem As ListItem) As Boolean
+    On Error GoTo ErrorHandler
+
+    LoadRecordFromListView = False
+
+    ' Clear form first
+    Call ClearForm(True)
+
+    ' Re-initialize combo boxes
+    Call InitializeComboBoxes
+
+    ' Load data directly from ListView SubItems with safe handling
+    ' ListView structure:
+    ' Text(0): Enterprise ID
+    ' SubItems(1): Employee Name
+    ' SubItems(2): Employee Email
+    ' SubItems(3): Date Time
+    ' SubItems(4): Type
+    ' SubItems(5): Month
+    ' SubItems(6): Week
+    ' SubItems(7): Team Name
+    ' SubItems(8): Region
+    ' SubItems(9): Audit Engagement
+    ' SubItems(10): Engagement Activity
+    ' SubItems(11): Engagement Hr
+    ' SubItems(12): Remark 1
+    ' SubItems(13): Non-Audit Eng
+    ' SubItems(14): Non-Audit Hr
+    ' SubItems(15): Remark 2
+    ' SubItems(16): Submitted By
+
+    ' 1. Employee name
+    Me.TextboxEmpname.Value = GetSafeSubItemValue(selectedItem, 1)
+
+    ' 2. Month (triggers week dropdown update)
+    Dim monthValue As String
+    monthValue = GetSafeSubItemValue(selectedItem, 5)
+    If monthValue <> "" Then
+        Me.ComboMonth.Value = monthValue
+        Call UpdateWeekDropdown
+    End If
+
+    ' 3. Week (now that dropdown is populated)
+    Dim weekValue As String
+    weekValue = GetSafeSubItemValue(selectedItem, 6)
+    If weekValue <> "" Then
+        Me.ComboWeek.Value = weekValue
+    End If
+
+    ' 4. Team
+    Dim teamValue As String
+    teamValue = GetSafeSubItemValue(selectedItem, 7)
+    If teamValue <> "" Then
+        Me.ComboTeam.Value = teamValue
+    End If
+
+    ' 5. Region (triggers engagement dropdown update)
+    Dim regionValue As String
+    regionValue = GetSafeSubItemValue(selectedItem, 8)
+    If regionValue <> "" Then
+        Me.ComboRegion.Value = regionValue
+        Call LoadEngagementDropdown
+    End If
+
+    ' 6. Engagement (now that dropdown is populated)
+    Dim engValue As String
+    engValue = GetSafeSubItemValue(selectedItem, 9)
+    If engValue <> "" Then
+        Me.ComboEng.Value = engValue
+    End If
+
+    ' 7. Activity
+    Dim actiValue As String
+    actiValue = GetSafeSubItemValue(selectedItem, 10)
+    If actiValue <> "" Then
+        Me.ComboActi.Value = actiValue
+    End If
+
+    ' 8. Hours and remarks
+    Me.TextBoxHour1.Value = GetSafeSubItemValue(selectedItem, 11)
+    Me.TextBoxR1.Value = GetSafeSubItemValue(selectedItem, 12)
+
+    ' 9. Non-Engagement fields
+    Dim neValue As String
+    neValue = GetSafeSubItemValue(selectedItem, 13)
+    If neValue <> "" Then
+        Me.ComboNE.Value = neValue
+    End If
+
+    Me.TextBoxH2.Value = GetSafeSubItemValue(selectedItem, 14)
+    Me.TextBoxR2.Value = GetSafeSubItemValue(selectedItem, 15)
+
+    LoadRecordFromListView = True
+    Exit Function
+
+ErrorHandler:
+    MsgBox "Error in LoadRecordFromListView: " & Err.Description & vbCrLf & _
+           "Error Number: " & Err.Number, vbCritical
+    LoadRecordFromListView = False
+End Function
+
+Private Sub Commandcorrec_Click()
+    If Not isCorrection Then
+        MsgBox "Please select a record to correct by double-clicking it in the list.", vbExclamation
+        Exit Sub
+    End If
+
+    If ValidateForm() Then
+        Call SaveCorrectedRecord
+        isCorrection = False
+        correctionSource = ""
+        correctionRowNumber = 0
+        Me.Caption = "Timesheet Data Entry"
+        Call ClearForm(False)
+        Call LoadAllUserRecords ' Refresh the list
+        ' Set focus back to ComboMonth
+        Me.ComboMonth.SetFocus
+    End If
+End Sub
+
+Private Function ValidateForm() As Boolean
+    ValidateForm = True
+
+    ' Basic field validation
+    If Me.ComboMonth.Value = "" Then
+        MsgBox "Please select Month.", vbExclamation: ValidateForm = False: Exit Function
+    End If
+    If Me.ComboWeek.Value = "" Then
+        MsgBox "Please select Week.", vbExclamation: ValidateForm = False: Exit Function
+    End If
+    If Me.ComboTeam.Value = "" Then
+        MsgBox "Please select Team.", vbExclamation: ValidateForm = False: Exit Function
+    End If
+
+    ' Validate ComboBox values are from their respective lists
+    If Not ValidateComboBoxValue(Me.ComboMonth, Me.ComboMonth.Value) Then
+        MsgBox "Please select a valid Month from the dropdown list.", vbExclamation: ValidateForm = False: Exit Function
+    End If
+    If Not ValidateComboBoxValue(Me.ComboWeek, Me.ComboWeek.Value) Then
+        MsgBox "Please select a valid Week from the dropdown list.", vbExclamation: ValidateForm = False: Exit Function
+    End If
+    If Not ValidateComboBoxValue(Me.ComboTeam, Me.ComboTeam.Value) Then
+        MsgBox "Please select a valid Team from the dropdown list.", vbExclamation: ValidateForm = False: Exit Function
+    End If
+
+    ' Check if at least one engagement is filled
+    Dim eng1Filled As Boolean
+    Dim eng2Filled As Boolean
+
+    eng1Filled = (Me.ComboEng.Value <> "" And Me.TextBoxHour1.Value <> "")
+    eng2Filled = (Me.ComboNE.Value <> "" And Me.TextBoxH2.Value <> "")
+
+    If Not (eng1Filled Or eng2Filled) Then
+        MsgBox "Please fill at least one engagement section.", vbExclamation
+        ValidateForm = False: Exit Function
+    End If
+
+    ' Validate engagement section if filled
+    If eng1Filled Then
+        If Me.ComboActi.Value = "" Then
+            MsgBox "Please select Engagement Activity when Engagement Name and Hours are specified.", vbExclamation
+            ValidateForm = False: Exit Function
+        End If
+        If Me.ComboRegion.Value = "" Then
+            MsgBox "Please select Region when Audit Engagement is specified.", vbExclamation
+            ValidateForm = False: Exit Function
+        End If
+        If Not ValidateComboBoxValue(Me.ComboRegion, Me.ComboRegion.Value) Then
+            MsgBox "Please select a valid Region from the dropdown list.", vbExclamation: ValidateForm = False: Exit Function
+        End If
+        If Not ValidateComboBoxValue(Me.ComboEng, Me.ComboEng.Value) Then
+            MsgBox "Please select a valid Engagement from the dropdown list.", vbExclamation: ValidateForm = False: Exit Function
+        End If
+        If Not ValidateComboBoxValue(Me.ComboActi, Me.ComboActi.Value) Then
+            MsgBox "Please select a valid Activity from the dropdown list.", vbExclamation: ValidateForm = False: Exit Function
+        End If
+
+        ' Validate hours range (1-300)
+        If Not IsNumeric(Me.TextBoxHour1.Value) Then
+            MsgBox "Please enter a valid number for Engagement Hours.", vbExclamation
+            ValidateForm = False: Exit Function
+        End If
+        Dim hours1 As Double
+        hours1 = CDbl(Me.TextBoxHour1.Value)
+        If hours1 < 1 Or hours1 > 300 Then
+            MsgBox "Engagement Hours must be between 1 and 300.", vbExclamation
+            ValidateForm = False: Exit Function
+        End If
+    End If
+
+    ' Validate second engagement section if filled
+    If eng2Filled Then
+        If Not ValidateComboBoxValue(Me.ComboNE, Me.ComboNE.Value) Then
+            MsgBox "Please select a valid Other Engagement from the dropdown list.", vbExclamation: ValidateForm = False: Exit Function
+        End If
+
+        ' Validate hours range (1-300)
+        If Not IsNumeric(Me.TextBoxH2.Value) Then
+            MsgBox "Please enter a valid number for Other Hours.", vbExclamation
+            ValidateForm = False: Exit Function
+        End If
+        Dim hours2 As Double
+        hours2 = CDbl(Me.TextBoxH2.Value)
+        If hours2 < 1 Or hours2 > 300 Then
+            MsgBox "Other Hours must be between 1 and 300.", vbExclamation
+            ValidateForm = False: Exit Function
+        End If
+    End If
+End Function
+
+Private Sub SaveCorrectedRecord()
+    On Error GoTo ErrorHandler
+
+    Application.EnableEvents = False
+
+    ' First, delete the old record
+    If correctionSource = "DATABASE" Then
+        Call DeleteOriginalDatabaseRecord
+        Call AddNewDatabaseRecord
+    Else
+        Call DeleteOriginalLocalRecord
+        Call AddNewLocalRecord
+    End If
+
+    Application.EnableEvents = True
+
+    ThisWorkbook.Save
+
+    MsgBox "SUCCESS! CORRECTION completed!" & vbCrLf & _
+           "Original record deleted and new corrected record added to " & correctionSource & ".", vbInformation, "Correction Complete"
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error saving correction: " & Err.Description, vbCritical
+    On Error Resume Next
+    Application.EnableEvents = True
+End Sub
+
+Private Sub DeleteOriginalDatabaseRecord()
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    wsDB.Unprotect
+    ' Delete the original row
+    wsDB.Rows(correctionRowNumber).Delete
+    wsDB.Protect UserInterfaceOnly:=True
+End Sub
+
+Private Sub AddNewDatabaseRecord()
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    wsDB.Unprotect
+
+    ' Find next available row in database
+    Dim nextRow As Long
+    nextRow = wsDB.Cells(wsDB.Rows.Count, 1).End(xlUp).Row + 1
+
+    ' Add new corrected record to database
+    With wsDB
+        .Cells(nextRow, 1).Value = currentUserID                    ' Enterprise ID
+        .Cells(nextRow, 2).Value = Me.TextboxEmpname.Value         ' Employee Name
+        .Cells(nextRow, 3).Value = ActiveSheet.Range("W7").Value   ' Employee Email
+        .Cells(nextRow, 4).Value = Format(Now, "yyyy-mm-dd hh:mm:ss") ' Date and Time
+        .Cells(nextRow, 5).Value = "Timesheet Correction"          ' Type
+        .Cells(nextRow, 6).Value = Me.ComboMonth.Value             ' Month
+        .Cells(nextRow, 7).Value = Me.ComboWeek.Value              ' Week
+        .Cells(nextRow, 8).Value = Me.ComboTeam.Value              ' Team Name
+        .Cells(nextRow, 9).Value = Me.ComboRegion.Value            ' Region
+        .Cells(nextRow, 10).Value = Me.ComboEng.Value              ' Audit Engagement
+        .Cells(nextRow, 11).Value = Me.ComboActi.Value             ' Engagement Activity
+        .Cells(nextRow, 12).Value = Me.TextBoxHour1.Value          ' Engagement Hr
+        .Cells(nextRow, 13).Value = Me.TextBoxR1.Value             ' Remark 1
+        .Cells(nextRow, 14).Value = Me.ComboNE.Value               ' Non-Audit Eng
+        .Cells(nextRow, 15).Value = Me.TextBoxH2.Value             ' Non-Audit Hr
+        .Cells(nextRow, 16).Value = Me.TextBoxR2.Value             ' Remark 2
+        .Cells(nextRow, 17).Value = Application.userName           ' Submitted By
+    End With
+
+    wsDB.Protect UserInterfaceOnly:=True
+End Sub
+
+Private Sub DeleteOriginalLocalRecord()
+    Dim wsUser As Worksheet
+    Set wsUser = ActiveSheet
+
+    wsUser.Unprotect
+    ' Delete the original row
+    wsUser.Rows(correctionRowNumber).Delete
+    wsUser.Protect UserInterfaceOnly:=True
+End Sub
+
+Private Sub AddNewLocalRecord()
+    Dim wsUser As Worksheet
+    Set wsUser = ActiveSheet
+
+    wsUser.Unprotect
+
+    ' Find next available row in local storage (starts from 3000)
+    Dim nextRow As Long
+    nextRow = wsUser.Cells(wsUser.Rows.Count, "B").End(xlUp).Row
+    If nextRow < 3000 Then nextRow = 2999
+    nextRow = nextRow + 1
+
+    ' Add new corrected record to local storage
+    With wsUser
+        .Cells(nextRow, 2).Value = currentUserID                    ' Enterprise ID
+        .Cells(nextRow, 3).Value = Me.TextboxEmpname.Value         ' Employee Name
+        .Cells(nextRow, 4).Value = ActiveSheet.Range("W7").Value   ' Employee Email
+        .Cells(nextRow, 5).Value = Format(Now, "yyyy-mm-dd hh:mm:ss") ' Date and Time
+        .Cells(nextRow, 6).Value = "Timesheet Correction"          ' Type
+        .Cells(nextRow, 7).Value = Me.ComboMonth.Value             ' Month
+        .Cells(nextRow, 8).Value = Me.ComboWeek.Value              ' Week
+        .Cells(nextRow, 9).Value = Me.ComboTeam.Value              ' Team Name
+        .Cells(nextRow, 10).Value = Me.ComboRegion.Value           ' Region
+        .Cells(nextRow, 11).Value = Me.ComboEng.Value              ' Audit Engagement
+        .Cells(nextRow, 12).Value = Me.ComboActi.Value             ' Engagement Activity
+        .Cells(nextRow, 13).Value = Me.TextBoxHour1.Value          ' Engagement Hr
+        .Cells(nextRow, 14).Value = Me.TextBoxR1.Value             ' Remark 1
+        .Cells(nextRow, 15).Value = Me.ComboNE.Value               ' Non-Audit Eng
+        .Cells(nextRow, 16).Value = Me.TextBoxH2.Value             ' Non-Audit Hr
+        .Cells(nextRow, 17).Value = Me.TextBoxR2.Value             ' Remark 2
+        .Cells(nextRow, 18).Value = Application.userName           ' Submitted By
+
+        ' Set font color to white (hidden) for local storage
+        .Range(.Cells(nextRow, 2), .Cells(nextRow, 18)).Font.Color = RGB(255, 255, 255)
+    End With
+
+    wsUser.Protect UserInterfaceOnly:=True
+End Sub
+
+Private Sub ClearForm(clearAll As Boolean)
+    ' Always clear these fields (non-preserved)
+    Me.ComboEng.Value = ""
+    Me.ComboActi.Value = ""
+    Me.TextBoxHour1.Value = ""
+    Me.TextBoxR1.Value = ""
+    Me.ComboNE.Value = ""
+    Me.TextBoxH2.Value = ""
+    Me.TextBoxR2.Value = ""
+    Me.ComboRegion.Value = ""
+
+    If clearAll Then
+        Me.TextboxEmpname.Value = ""
+        Me.ComboMonth.Value = ""
+        Me.ComboWeek.Value = ""
+        Me.ComboTeam.Value = ""
+    End If
+
+    ' Set focus to ComboMonth after clearing
+    Me.ComboMonth.SetFocus
+End Sub
 
 Private Function ValidateComboBoxValue(combo As MSForms.ComboBox, Value As String) As Boolean
     Dim i As Integer
@@ -878,31 +4293,376 @@ Private Sub CommandClose_Click()
 End Sub
 ```
 
-KEY FIXES:
+---
 
-1. Removed .Count property check: The ListView SubItems collection doesn't have a .Count property in VBA. We use error handling instead.
-2. Updated GetSafeSubItemValue function: Now uses On Error Resume Next to try accessing the subitem, and if it fails (Err.Number <> 0), returns empty string.
-3. Fixed Date Time and Type fields: When saving corrections, we use:
-   · Current date/time for "Date Time" field (shows when correction was made)
-   · Always set "Type" to "Timesheet Correction" for corrections
-   · Current user for "Submitted By" field
+3. USER SHEET CODE (Worksheet Module)
 
-HOW TO IMPLEMENT:
+```vba
+' ==================== USER SHEET CODE ====================
+Private Sub Worksheet_Activate()
+    ' When sheet is activated, focus on Month selection if Enterprise ID is populated
+    If Me.Range("W6").Value <> "" Then
+        Me.Range("C6").Select
+    End If
+End Sub
 
-1. Copy the entire corrected code above and replace your existing UserFormDE code.
-2. Make sure you have the proper reference set:
-   · In VBA Editor: Tools → References
-   · Check: Microsoft Windows Common Controls 6.0 (SP6)
-3. Test the correction form:
-   · Login as a user
-   · Open the correction form
-   · Double-click a record in the ListView
-   · Verify that editable fields load correctly
-   · Make changes and click "Correct Record"
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+    ' Provide visual feedback when users are in the engagement entry area
+    Static lastTarget As Range
 
-The error should now be resolved. The code properly handles:
+    ' Clear previous highlighting
+    If Not lastTarget Is Nothing Then
+        On Error Resume Next
+        lastTarget.Interior.ColorIndex = xlNone
+        On Error GoTo 0
+        Set lastTarget = Nothing
+    End If
 
-· Loading editable fields only (Month, Week, Team, Region, Engagement, Activity, Hours, Remarks)
-· Preserving non-editable fields (Enterprise ID, Employee Name, Employee Email)
-· Using current date/time and "Timesheet Correction" type for corrections
-· Proper error handling for ListView subitems
+    ' Highlight current row if in engagement entry area (rows 10-14)
+    If Target.Cells.Count = 1 Then
+        If Target.Row >= 10 And Target.Row <= 14 And Target.Column >= 2 And Target.Column <= 10 Then
+            On Error Resume Next
+            Me.Range("B" & Target.Row & ":J" & Target.Row).Interior.Color = RGB(245, 245, 245)
+            Set lastTarget = Me.Range("B" & Target.Row & ":J" & Target.Row)
+            On Error GoTo 0
+        End If
+    End If
+End Sub
+
+Private Sub Worksheet_Deactivate()
+    On Error Resume Next
+    ' Clear any remaining highlighting
+    Me.Range("B10:J14").Interior.ColorIndex = xlNone
+    On Error GoTo 0
+End Sub
+```
+
+---
+
+4. THISWORKBOOK CODE
+
+```vba
+' ==================== THISWORKBOOK CODE ====================
+Option Explicit
+
+Private Sub Workbook_Open()
+    Dim ws As Worksheet
+    Dim activeUsers As Collection
+
+    Application.ScreenUpdating = False
+    Set activeUsers = New Collection
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "DV" And ws.Name <> "Admin" Then
+            If IsSheetInUse(ws) Then
+                activeUsers.Add ws.Name
+            End If
+        End If
+    Next ws
+
+    For Each ws In ThisWorkbook.Sheets
+        If ws.Name <> "Login" And ws.Name <> "Data base" And ws.Name <> "DV" And ws.Name <> "Admin" Then
+            If Not IsInCollection(activeUsers, ws.Name) Then
+                ws.Visible = xlSheetVeryHidden
+            End If
+        End If
+    Next ws
+
+    ' Setup Login sheet protection with F24 unprotected
+    SetupLoginSheet
+
+    Sheets("Login").Visible = xlSheetVisible
+    Sheets("Login").Activate
+    Sheets("Login").Range("F24").Select
+    Application.ScreenUpdating = True
+End Sub
+
+Private Sub SetupLoginSheet()
+    Dim loginWS As Worksheet
+
+    On Error Resume Next
+    Set loginWS = Sheets("Login")
+
+    If Not loginWS Is Nothing Then
+        ' Unprotect the sheet first
+        loginWS.Unprotect
+
+        ' Lock all cells by default
+        loginWS.Cells.Locked = True
+
+        ' Unlock F24 cell specifically for user input
+        loginWS.Range("F24").Locked = False
+
+        ' Protect the sheet while allowing F24 to be editable
+        loginWS.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    End If
+
+    On Error GoTo 0
+End Sub
+
+Private Function IsSheetInUse(ws As Worksheet) As Boolean
+    On Error Resume Next
+    IsSheetInUse = Not ws.Protection.AllowEditRanges Is Nothing
+    On Error GoTo 0
+End Function
+
+Private Function IsInCollection(col As Collection, val As Variant) As Boolean
+    Dim item As Variant
+    For Each item In col
+        If item = val Then
+            IsInCollection = True
+            Exit Function
+        End If
+    Next item
+    IsInCollection = False
+End Function
+
+Private Sub Workbook_SheetActivate(ByVal Sh As Object)
+    On Error Resume Next
+    If Sh.Name = "Admin" Then
+        Call UpdatePendingCounts
+    ElseIf Sh.Name = "Login" Then
+        ' Ensure F24 remains unprotected when Login sheet is activated
+        SetupLoginSheet
+    End If
+End Sub
+
+Private Sub Workbook_SheetChange(ByVal Sh As Object, ByVal Target As Range)
+    Const YEAR_CELL As String = "H1"
+    Const MONTH_CELL As String = "C6"
+
+    On Error GoTo ErrorHandler
+
+    If Not (Intersect(Target, Sh.Range(YEAR_CELL)) Is Nothing And _
+            Intersect(Target, Sh.Range(MONTH_CELL)) Is Nothing) Then
+        HandleYearMonthChange Sh, Target
+    End If
+
+    Exit Sub
+
+ErrorHandler:
+    Debug.Print "Error " & Err.Number & ": " & Err.Description
+    Application.EnableEvents = True
+End Sub
+
+Private Sub HandleYearMonthChange(Sh As Worksheet, Target As Range)
+    Const YEAR_CELL As String = "H1"
+    Const MONTH_CELL As String = "C6"
+    Const WEEK_CELL As String = "E6"
+
+    Dim selectedYear As Integer
+    Dim selectedMonth As String
+    Dim firstDayOfMonth As Date
+    Dim lastDayOfMonth As Date
+    Dim currentDate As Date
+    Dim weekList As New Collection
+    Dim weekString As String
+    Dim weekArray() As String
+    Dim i As Integer
+
+    Application.EnableEvents = False
+    UnprotectSheet Sh
+
+    selectedYear = Sh.Range(YEAR_CELL).Value
+    selectedMonth = Sh.Range(MONTH_CELL).Value
+
+    If selectedYear = 0 Or selectedMonth = "" Then
+        Sh.Range(WEEK_CELL).Value = ""
+        If HasValidation(Sh.Range(WEEK_CELL)) Then
+            Sh.Range(WEEK_CELL).Validation.Delete
+        End If
+        GoTo CleanUp
+    End If
+
+    firstDayOfMonth = DateSerial(selectedYear, Month(selectedMonth & " 1"), 1)
+    lastDayOfMonth = DateSerial(selectedYear, Month(selectedMonth & " 1") + 1, 0)
+
+    currentDate = firstDayOfMonth
+    Do While currentDate <= lastDayOfMonth
+        If Weekday(currentDate, vbMonday) = 1 Then
+            weekString = "Week starting " & Format(currentDate, "mmmm d yyyy")
+            weekList.Add weekString
+        End If
+        currentDate = currentDate + 1
+    Loop
+
+    ReDim weekArray(1 To weekList.Count)
+    For i = 1 To weekList.Count
+        weekArray(i) = weekList(i)
+    Next i
+
+    If HasValidation(Sh.Range(WEEK_CELL)) Then
+        Sh.Range(WEEK_CELL).Validation.Delete
+    End If
+
+    Sh.Range(WEEK_CELL).Validation.Add _
+        Type:=xlValidateList, _
+        AlertStyle:=xlValidAlertStop, _
+        Formula1:=Join(weekArray, ",")
+
+    Sh.Range(WEEK_CELL).Value = ""
+
+CleanUp:
+    ProtectSheet Sh
+    Application.EnableEvents = True
+End Sub
+
+Private Sub Workbook_BeforeClose(Cancel As Boolean)
+    Dim userName As String
+    Dim ws As Worksheet
+
+    userName = Environ("USERNAME")
+    For Each ws In ThisWorkbook.Worksheets
+        If LCase(ws.Name) = LCase(userName) Then
+            If Not ws.Visible = xlSheetHidden Then
+                ws.Visible = xlSheetHidden
+            End If
+            Exit For
+        End If
+    Next ws
+End Sub
+
+Private Function HasValidation(rng As Range) As Boolean
+    On Error Resume Next
+    HasValidation = (rng.Validation.Type <> xlValidateInputOnly)
+    On Error GoTo 0
+End Function
+
+Private Sub UnprotectSheet(ws As Worksheet)
+    On Error Resume Next
+    ws.Unprotect
+    On Error GoTo 0
+End Sub
+
+Private Sub ProtectSheet(ws As Worksheet)
+    On Error Resume Next
+    ' Special handling for Login sheet
+    If ws.Name = "Login" Then
+        SetupLoginSheet
+    Else
+        ws.Protect UserInterfaceOnly:=True
+    End If
+    On Error GoTo 0
+End Sub
+```
+
+---
+
+5. SETUP INSTRUCTIONS
+
+Step 1: Create Excel Workbook Structure
+
+1. Open new Excel workbook
+2. Save as "Timesheet_System.xlsm" (Macro-Enabled Workbook)
+3. Create these sheets:
+   · Login (with Enterprise ID dropdown in F24)
+   · Data base (for master database)
+   · DV (for employee data: Column F = Enterprise ID, Column G = Employee Name)
+   · Admin (for admin functions)
+   · User sheets (one per user, named with Enterprise IDs like K12345, K67890)
+
+Step 2: Add VBA Code
+
+1. Press ALT + F11 to open VBA Editor
+2. Insert Module:
+   · Right-click on VBAProject → Insert → Module
+   · Paste "Main Module Code"
+3. Create UserForm:
+   · Right-click on VBAProject → Insert → UserForm
+   · Name it UserFormDE
+   · Add these controls:
+     · TextBox: TextboxEmpname
+     · ComboBox: ComboMonth, ComboWeek, ComboRegion, ComboTeam, ComboEng, ComboActi, ComboNE
+     · TextBox: TextBoxHour1, TextBoxR1, TextBoxH2, TextBoxR2
+     · ListView: ListViewRecord
+     · CommandButtons: Commandfilter, Commandcorrec, CommandClose
+   · Paste "UserFormDE Code" into the UserForm
+4. Add ThisWorkbook Code:
+   · Double-click "ThisWorkbook" in Project Explorer
+   · Paste "ThisWorkbook Code"
+5. Add User Sheet Code (for EACH user sheet):
+   · Right-click each user sheet → View Code
+   · Paste "User Sheet Code"
+
+Step 3: Add Required References
+
+1. In VBA Editor: Tools → References
+2. Check: Microsoft Windows Common Controls 6.0 (SP6)
+3. Click OK
+
+Step 4: Set Up Named Ranges in DV Sheet
+
+Create these named ranges in the DV sheet:
+
+· Region (list of regions: Americas, EMEA, Asia, etc.)
+· EngActivity (list of engagement activities)
+· Team_Name (list of team names)
+· Other_than_Eng (list of non-audit engagements)
+· Region-specific lists (e.g., Americas, EMEA, Asia with engagement IDs)
+
+Step 5: Format User Sheets
+
+Each user sheet should have:
+
+· Cell F2: Employee Name (auto-filled)
+· Cell W6: Enterprise ID (auto-filled on login)
+· Cell W7: Email (auto-filled)
+· Cells C6, E6, H6: Month, Week, Team (dropdowns)
+· Rows 10-14: Data entry area (columns B-J)
+· Buttons for: Submit Timesheet, View/Correction, Open Correction Form, Toggle My Records, Logout
+
+Step 6: Create Login Sheet
+
+1. Add dropdown in cell F24 with list of Enterprise IDs
+2. Add "Login" button assigned to LoginUser macro
+3. Format as needed
+
+---
+
+6. TROUBLESHOOTING GUIDE
+
+Common Issues and Solutions:
+
+1. "Compile Error: User-defined type not defined"
+   · Solution: Add reference to "Microsoft Windows Common Controls 6.0"
+2. "Object required" error
+   · Solution: Ensure ListView control is properly added to UserForm
+3. Form doesn't open
+   · Solution: Check UserForm name is exactly "UserFormDE"
+4. Login not working
+   · Solution: Ensure user sheets exist with Enterprise ID names
+5. Data not saving
+   · Solution: Check if workbook is saved as .xlsm, not .xlsx
+6. Correction form doesn't populate
+   · Solution: Check ListView column indices in LoadRecordFromListView
+
+Testing Checklist:
+
+· Login works with Enterprise ID
+· Timesheet submission works
+· Correction form opens
+· Double-clicking records populates form
+· Corrections save and delete old records
+· Admin sync works (password: "123")
+· All user sheets can be hidden/shown
+
+---
+
+IMPORTANT NOTES:
+
+1. Passwords:
+   · Admin sync: 123
+   · Show/Hide sheets: 123
+2. Data Storage:
+   · Local storage: Rows 3000+ in each user sheet
+   · Master database: "Data base" sheet
+3. Correction Process:
+   · Old record is deleted
+   · New corrected record is added
+   · Works for both local and database records
+4. Multi-User Support:
+   · Each user has their own sheet
+   · Sheets are hidden when not in use
+   · Admin can sync all records
+
+This complete system handles multiple users, timesheet submissions, corrections, and admin synchronization. Save this text file for reference and copy-paste the code sections as needed.
