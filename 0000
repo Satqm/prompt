@@ -828,6 +828,368 @@ Public Sub UpdatePendingCounts()
         .Range("G4").value = userCount
     End With
 End Sub
+===module 2======
+
+
+Public Sub AddUsersFromTable()
+    On Error GoTo ErrorHandler
+
+    Dim userRange As Range
+    Dim userRow As Range
+    Dim enterpriseID As String, employeeName As String, employeeEmail As String
+    Dim successCount As Integer, failCount As Integer
+    Dim incompleteCount As Integer, existingCount As Integer
+    Dim wsDV As Worksheet
+
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+
+    ' Use the predefined MUser range
+    Set userRange = ThisWorkbook.Names("MUser").RefersToRange
+
+    If userRange Is Nothing Then
+        MsgBox "MUser range not found. Please check the Name Manager.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Initialize counters
+    successCount = 0
+    failCount = 0
+    incompleteCount = 0
+    existingCount = 0
+
+    ' Unprotect DV sheet
+    Set wsDV = ThisWorkbook.Sheets("DV")
+    wsDV.Unprotect
+
+    ' Loop through each row in the MUser range (skip header row)
+    For Each userRow In userRange.Rows
+        If userRow.Row > userRange.Row Then ' Skip header row
+            enterpriseID = Trim(userRow.Cells(1, 1).value)
+            employeeName = Trim(userRow.Cells(1, 2).value)
+            employeeEmail = Trim(userRow.Cells(1, 3).value)
+
+            ' Only process rows where all fields are filled
+            If enterpriseID <> "" And employeeName <> "" And employeeEmail <> "" Then
+                ' Call AddNewUser function with error handling
+                On Error Resume Next
+                Call AddNewUser(enterpriseID, employeeName, employeeEmail)
+
+                If Err.Number = 0 Then
+                    successCount = successCount + 1
+                ElseIf Err.Number = vbObjectError + 1 Then
+                    existingCount = existingCount + 1
+                Else
+                    failCount = failCount + 1
+                End If
+                On Error GoTo ErrorHandler
+            ElseIf enterpriseID <> "" Or employeeName <> "" Or employeeEmail <> "" Then
+                ' If any field is filled but not all, count as incomplete
+                incompleteCount = incompleteCount + 1
+            End If
+        End If
+    Next userRow
+
+    ' Update the Login dropdown after adding all users
+    UpdateLoginDropdown
+
+    ' Clear MUser range, leaving the header
+    ClearMUserRange userRange
+
+    ' Display results in a single message box
+    Dim message As String
+    Dim hasContent As Boolean
+    hasContent = False
+
+    message = "Process completed." & vbNewLine & vbNewLine
+
+    If successCount > 0 Then
+        message = message & "Users added successfully: " & successCount & vbNewLine
+        hasContent = True
+    End If
+
+    If incompleteCount > 0 Then
+        message = message & "Users with incomplete details: " & incompleteCount & vbNewLine
+        hasContent = True
+    End If
+
+    If existingCount > 0 Then
+        message = message & "Users already existing: " & existingCount & vbNewLine
+        hasContent = True
+    End If
+
+    If failCount > 0 Then
+        message = message & "Failed attempts: " & failCount & vbNewLine
+        hasContent = True
+    End If
+
+    If Not hasContent Then
+        message = message & "No users were processed."
+    End If
+
+    MsgBox message, vbInformation, "Add Users Result"
+
+    GoTo CleanUp
+
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical, "Error"
+
+CleanUp:
+    ' Re-protect DV sheet
+    wsDV.Protect UserInterfaceOnly:=True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+End Sub
+
+
+Private Sub ClearMUserRange(userRange As Range)
+    ' Clear the MUser range, leaving the header
+    If userRange.Rows.Count > 1 Then
+        userRange.Offset(1).ClearContents
+    End If
+End Sub
+
+Public Sub AddNewUser(enterpriseID As String, employeeName As String, employeeEmail As String)
+    On Error GoTo ErrorHandler
+
+    Dim wsLogin As Worksheet, wsForm As Worksheet, wsDV As Worksheet, wsNew As Worksheet
+    Dim nextDVRow As Long
+
+    ' === Check if user already exists ===
+    If SheetExists(enterpriseID) Then
+        Err.Raise vbObjectError + 1, , "User '" & enterpriseID & "' already exists!"
+    End If
+
+    ' === Get Template Form (even if very hidden) ===
+    Set wsForm = GetVeryHiddenSheet("Form")
+    If wsForm Is Nothing Then
+        Err.Raise vbObjectError + 2, , "Template sheet 'Form' not found!"
+    End If
+
+    ' === Get DV sheet ===
+    Set wsDV = ThisWorkbook.Sheets("DV")
+    If wsDV Is Nothing Then
+        Err.Raise vbObjectError + 3, , "DV sheet not found!"
+    End If
+
+    ' === Create new sheet by copying Form ===
+    Dim originalVisibility As XlSheetVisibility
+    originalVisibility = wsForm.Visible
+    wsForm.Visible = xlSheetVisible  ' Temporarily make Form visible
+    wsForm.Copy After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count)
+    wsForm.Visible = originalVisibility  ' Set Form back to original visibility
+    Set wsNew = ActiveSheet
+
+    ' === Rename to Enterprise ID ===
+    On Error Resume Next
+    wsNew.Name = enterpriseID
+    If Err.Number <> 0 Then
+        Application.DisplayAlerts = False
+        wsNew.Delete
+        Application.DisplayAlerts = True
+        Err.Raise vbObjectError + 4, , "Cannot rename sheet to '" & enterpriseID & "'. Please use a valid sheet name."
+    End If
+    On Error GoTo ErrorHandler
+
+    ' === Setup new sheet data ===
+    With wsNew
+        .Unprotect
+
+        ' Clear any existing data in key cells
+        .Range("D6,D8,D10,AZ1").ClearContents
+
+        ' Fill user data
+        .Range("D6").value = enterpriseID
+        .Range("D8").value = employeeName
+        .Range("D10").value = employeeEmail
+        .Range("AZ1").value = "Added: " & Format(Now, "yyyy-mm-dd hh:mm:ss")
+
+        ' Set protection
+        .Cells.Locked = True
+        .Range("D6").Locked = True
+        .Range("D8,D10,D12,D14,E14,D16,H6,H8,H10,H12,H14,H16,AT1").Locked = False
+        .Range("B3000:P" & .Rows.Count).Locked = False
+
+        .Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    End With
+
+    ' === Add to DV sheet ===
+    wsDV.Unprotect
+    nextDVRow = wsDV.Cells(wsDV.Rows.Count, "F").End(xlUp).Row + 1
+    If nextDVRow < 2 Then nextDVRow = 2 ' Start from row 2 if sheet is empty
+    wsDV.Range("F" & nextDVRow).value = enterpriseID
+    wsDV.Range("G" & nextDVRow).value = employeeName
+    wsDV.Range("H" & nextDVRow).value = employeeEmail
+    wsDV.Protect UserInterfaceOnly:=True
+
+    ' === Try to copy VBA code (optional - might fail if security high) ===
+    On Error Resume Next
+    CopySheetMacrosSafe wsForm, wsNew
+    On Error GoTo ErrorHandler
+
+    ' === Update counters if function exists ===
+    On Error Resume Next
+    Call UpdatePendingCounts
+    On Error GoTo ErrorHandler
+
+    ' === Clear specified cells on the new user's sheet ===
+    ClearNewUserFields wsNew
+
+    Exit Sub
+
+ErrorHandler:
+    Err.Raise Err.Number, , Err.Description
+End Sub
+
+Private Function SheetExists(sheetName As String) As Boolean
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Sheets(sheetName)
+    SheetExists = Not ws Is Nothing
+    On Error GoTo 0
+End Function
+
+Private Sub CopySheetMacrosSafe(sourceSheet As Worksheet, targetSheet As Worksheet)
+    On Error Resume Next
+
+    Dim sourceCode As Object, targetCode As Object
+    Set sourceCode = ThisWorkbook.VBProject.VBComponents(sourceSheet.CodeName)
+    Set targetCode = ThisWorkbook.VBProject.VBComponents(targetSheet.CodeName)
+
+    If Not sourceCode Is Nothing And Not targetCode Is Nothing Then
+        If sourceCode.CodeModule.CountOfLines > 0 Then
+            targetCode.CodeModule.DeleteLines 1, targetCode.CodeModule.CountOfLines
+            targetCode.CodeModule.AddFromString sourceCode.CodeModule.Lines(1, sourceCode.CodeModule.CountOfLines)
+        End If
+    End If
+
+    ' If error occurs, just continue - VBA copying is optional
+    On Error GoTo 0
+End Sub
+
+Private Sub UpdateLoginDropdown()
+    On Error GoTo ErrorHandler
+
+    Dim wsDV As Worksheet, wsLogin As Worksheet
+    Dim lastRow As Long, dvRange As Range
+
+    ' Check if DV and Login sheets exist
+    If Not SheetExists("DV") Or Not SheetExists("Login") Then
+        MsgBox "DV or Login sheet not found. Please check your workbook structure.", vbExclamation
+        Exit Sub
+    End If
+
+    Set wsDV = ThisWorkbook.Sheets("DV")
+    Set wsLogin = ThisWorkbook.Sheets("Login")
+
+    ' Temporarily unprotect Login and DV sheets
+    wsLogin.Unprotect
+    wsDV.Unprotect
+
+    lastRow = wsDV.Cells(wsDV.Rows.Count, "F").End(xlUp).Row
+    If lastRow < 2 Then
+        ' No data in DV sheet, clear validation
+        wsLogin.Range("B3").Validation.Delete
+        GoTo CleanUp
+    End If
+
+    ' Set the range for data validation
+    Set dvRange = wsDV.Range("F2:F" & lastRow)
+
+    ' Update the data validation
+    With wsLogin.Range("B3").Validation
+        .Delete
+        .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+             Operator:=xlBetween, Formula1:="=" & dvRange.Address(External:=True)
+        .InCellDropdown = True
+    End With
+
+    GoTo CleanUp
+
+ErrorHandler:
+    MsgBox "An error occurred while updating the Login dropdown: " & Err.Description, vbCritical, "Error"
+
+CleanUp:
+    ' Re-protect Login and DV sheets
+    wsLogin.Protect UserInterfaceOnly:=True
+    wsDV.Protect UserInterfaceOnly:=True
+
+    ' Refresh the Login sheet to ensure changes are visible
+    wsLogin.Calculate
+End Sub
+
+Private Function GetVeryHiddenSheet(sheetName As String) As Worksheet
+    Dim ws As Worksheet
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name = sheetName Then
+            Set GetVeryHiddenSheet = ws
+            Exit Function
+        End If
+    Next ws
+End Function
+
+Private Sub ClearNewUserFields(ws As Worksheet)
+    Application.EnableEvents = False
+    ws.Unprotect
+
+    ' Clear specified form input fields
+    ws.Range("D12,D14,D16,H6,H8,H10,H12,H14,H16").ClearContents
+    ws.Range("D12").value = "New Timesheet Entry"
+
+    ' Maintain protection settings
+    ws.Cells.Locked = True
+    ws.Range("D6,D8,D10").Locked = True
+    ws.Range("D12,D14,E14,D16,H6,H8,H10,H12,H14,H16,AT1").Locked = False
+    ws.Range("B3000:P" & ws.Rows.Count).Locked = False ' Keep storage area unlocked
+
+    ws.Protect UserInterfaceOnly:=True, AllowFiltering:=True
+    Application.EnableEvents = True
+End Sub
+
+Public Sub DeleteUserSheet()
+    Dim ws As Worksheet
+    Dim wsDV As Worksheet
+    Dim wsLogin As Worksheet
+    Dim userID As String
+    Dim dvRow As Long
+
+    ' Get the active sheet
+    Set ws = ActiveSheet
+
+    ' Check if the active sheet is a user sheet
+    If ws.Name = "Login" Or ws.Name = "DV" Or ws.Name = "Form" Then
+        MsgBox "This sheet cannot be deleted.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Confirm deletion
+    If MsgBox("Are you sure you want to delete the sheet for user " & ws.Name & "?", vbYesNo + vbQuestion) = vbNo Then
+        Exit Sub
+    End If
+
+    userID = ws.Name
+
+    ' Delete the sheet
+    Application.DisplayAlerts = False
+    ws.Delete
+    Application.DisplayAlerts = True
+
+    ' Remove user from DV sheet
+    Set wsDV = ThisWorkbook.Sheets("DV")
+    dvRow = Application.Match(userID, wsDV.Columns("F"), 0)
+    If Not IsError(dvRow) Then
+        wsDV.Rows(dvRow).Delete
+    End If
+
+    ' Update Login dropdown
+    UpdateLoginDropdown
+
+    MsgBox "User sheet and data for " & userID & " have been deleted.", vbInformation
+End Sub
+
+
 
 user sheet cde=========================================
 Private Sub Worksheet_Change(ByVal Target As Range)
@@ -1286,4 +1648,4 @@ Submitted By
 and make a button for macro where user can click and enter unique code and make Timesheet Entry Correction
 you can store this New Timesheet Entry
 Timesheet Entry Correction
- value in in NOfill colur so thta its not visible  any unused cell like  BA2 ,  okay the main change in this user can submit upto 5 entry in this 
+ value in in NOfill colur so thta its not visible  any unused cell like  BA2 ,  okay the main change in this user can submit upto 5 entry in this  
