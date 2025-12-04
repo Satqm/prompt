@@ -1240,6 +1240,50 @@ Private Sub UpdatePendingCounts()
     Debug.Print "UpdatePendingCounts called"
 End Sub
 
+IN MY NEW FORM I WANT like USer CAN SubMIT upto 5 Engagemnet and changed the layout As well for that I have make some changes in cell refrences  W6: Enterprise ID (User identifier)  in NOfill colur so thta its not visible 
+W7: Employee Email Address ' in NOfill colur so thta its not visible 
+F2: Employee Name  to be in Sun Life New Display size 20
+H1: Year (for week calculation)
+C6: Month Selection (January-December)
+E6: Week Selection (Generated based on month)
+H6: Team Name Selection
+B10:B14: Region (Audit engagement region)
+C10:C14: Audit Engagement Name
+D10:D14: Engagement Activity
+E10:E14: Audit Hours
+F10:F14: Remark 1 (Audit engagement remarks)
+H10:H14: Non-Audit Engagement Name
+I10:I14: Non-Audit Hours
+J10:J14: Remark 2 (Non-audit engagement remarks)
 
-
-
+here i am added a new field  Engagement Activity  for that these value in comma seprate in dropdown Audit process walkthrough and you can shift other thing like mark for coreection and sync detail okay 
+Audit Planning
+Audit  Field work
+Audit Research
+Audit Issue writing
+Audit Data Analytics
+Audit Reporting
+Archer Documentation
+Audit Investigation
+ assign these value okay and also  store Month and week in seprate column and store in local and database in this order Unique Code
+Enterprise ID
+Employee Name
+Employee Email
+Submitted Time
+Type
+Month
+Week
+Region
+Engagement ID
+Engagement Hr
+Team Name
+Audit remark 1
+Non-Audit Eng Name
+Non-Audit Hr
+ non audit Remark2
+Submitted By
+ AND ONE MORE THING BY DEFAULT ALL ENTRY should be New Timesheet Entry
+and make a button for macro where user can click and enter unique code and make Timesheet Entry Correction
+you can store this New Timesheet Entry
+Timesheet Entry Correction
+ value in in NOfill colur so thta its not visible  any unused cell like  BA2 ,  okay the main change in this user can submit upto 5 entry in this 
