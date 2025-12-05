@@ -4569,8 +4569,9 @@ End Sub
 
 
 Possible issue after DIAGNOSIS:
-1. why its storing 3000 range for each sheet earlier it was not okay analyze my earlier code there is after adding 100 user its size only 1500 kb now why its jump upto 26 MB this line i have doubt  wsUser.Range("B3000:T" & wsUser.Rows.Count).Locked = False  ' Storage area
+1. why its storing 3000 range for each sheet earlier it was not okay analyze my earlier code there is after adding 100 user its size only 1500 kb now why its jump upto 26 MB this line i have doubt  wsUser.Range("B3000:T" & wsUser.Rows.Count).Locked = False  ' Storage area ther might be any other issue possible diagnose it ea
 2. login sheet problem may be fix i created a userform UserFormLOGIN
-when user open it show that sheet and earlier F24 now in form ComboBoxID and to take them to there sheet CommandLOGIN  this button if sheet not available then take them to Admin sheet 
+when user open it show that sheet and earlier F24 now in form ComboBoxID and to not call for UserFormLOGIN when user in sheet named -----   DV , Admin ,Data base,Form, and there is this button on CommandButtonLogin for login to there sheet and when user in Admin sheet then it manually call UserFormLOGIN
+
  okay here user login and land to there sheet write new code for UserFormLOGIN
 3. when user file correction then not delete old record just update old oneokay 
