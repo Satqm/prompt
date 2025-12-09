@@ -1,0 +1,792 @@
+' ==================== USERFORM DE CODE (CORRECTED) ====================
+Option Explicit
+
+' Module-level variables
+Private currentUserID As String
+Private isCorrection As Boolean
+Private correctionSource As String
+Private correctionRowNumber As Long
+
+Private Sub UserForm_Initialize()
+    isCorrection = False
+    correctionSource = ""
+    correctionRowNumber = 0
+
+    Call InitializeComboBoxes
+    Call ClearForm(False)
+    Call SetupListView
+
+    ' Center the form
+    Me.StartUpPosition = 0
+    Me.Left = Application.Left + (Application.Width - Me.Width) / 2
+    Me.Top = Application.Top + (Application.Height - Me.Height) / 2
+
+    ' Set focus to ComboMonth
+    Me.ComboMonth.SetFocus
+End Sub
+
+Public Sub LoadEmployeeName()
+    On Error Resume Next
+    currentUserID = Trim(ActiveSheet.Range("W6").Value)
+    On Error GoTo 0
+
+    If currentUserID = "" Then
+        MsgBox "Enterprise ID not found in cell W6. Please ensure you're logged in properly.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Search for employee name in DV sheet
+    On Error Resume Next
+    Dim wsData As Worksheet
+    Set wsData = ThisWorkbook.Sheets("DV")
+
+    Dim foundCell As Range
+    Set foundCell = wsData.Range("F:F").Find(What:=currentUserID, LookIn:=xlValues, LookAt:=xlWhole)
+
+    If Not foundCell Is Nothing Then
+        Me.TextboxEmpname.Value = wsData.Cells(foundCell.Row, "G").Value
+    Else
+        Me.TextboxEmpname.Value = "Employee Name Not Found"
+    End If
+
+    On Error GoTo 0
+
+    ' Load all user records initially
+    Call LoadAllUserRecords
+
+    ' Set focus to ComboMonth
+    Me.ComboMonth.SetFocus
+End Sub
+
+Private Sub InitializeComboBoxes()
+    On Error Resume Next
+
+    ' Month - Standard months
+    With Me.ComboMonth
+        .Clear
+        .AddItem "January"
+        .AddItem "February"
+        .AddItem "March"
+        .AddItem "April"
+        .AddItem "May"
+        .AddItem "June"
+        .AddItem "July"
+        .AddItem "August"
+        .AddItem "September"
+        .AddItem "October"
+        .AddItem "November"
+        .AddItem "December"
+    End With
+
+    ' Load other dropdowns from named ranges
+    Call LoadRegionDropdown
+    Call LoadActivityDropdown
+    Call LoadTeamDropdown
+    Call LoadNEDropdown
+    Call LoadEngagementDropdown
+
+    On Error GoTo 0
+End Sub
+
+Private Sub LoadRegionDropdown()
+    On Error Resume Next
+    Me.ComboRegion.Clear
+    Dim regionRange As Range
+    Set regionRange = ThisWorkbook.Names("Region").RefersToRange
+    If Not regionRange Is Nothing Then
+        Dim cell As Range
+        For Each cell In regionRange
+            If cell.Value <> "" Then
+                Me.ComboRegion.AddItem cell.Value
+            End If
+        Next cell
+    End If
+End Sub
+
+Private Sub LoadActivityDropdown()
+    On Error Resume Next
+    Me.ComboActi.Clear
+    Dim actRange As Range
+    Set actRange = ThisWorkbook.Names("EngActivity").RefersToRange
+    If Not actRange Is Nothing Then
+        Dim cell As Range
+        For Each cell In actRange
+            If cell.Value <> "" Then
+                Me.ComboActi.AddItem cell.Value
+            End If
+        Next cell
+    End If
+End Sub
+
+Private Sub LoadTeamDropdown()
+    On Error Resume Next
+    Me.ComboTeam.Clear
+    Dim teamRange As Range
+    Set teamRange = ThisWorkbook.Names("Team_Name").RefersToRange
+    If Not teamRange Is Nothing Then
+        Dim cell As Range
+        For Each cell In teamRange
+            If cell.Value <> "" Then
+                Me.ComboTeam.AddItem cell.Value
+            End If
+        Next cell
+    End If
+End Sub
+
+Private Sub LoadNEDropdown()
+    On Error Resume Next
+    Me.ComboNE.Clear
+    Dim neRange As Range
+    Set neRange = ThisWorkbook.Names("Other_than_Eng").RefersToRange
+    If Not neRange Is Nothing Then
+        Dim cell As Range
+        For Each cell In neRange
+            If cell.Value <> "" Then
+                Me.ComboNE.AddItem cell.Value
+            End If
+        Next cell
+    End If
+End Sub
+
+Private Sub LoadEngagementDropdown()
+    On Error Resume Next
+    Me.ComboEng.Clear
+    Dim engRange As Range
+    Set engRange = ThisWorkbook.Names("Audit_Eng").RefersToRange
+    If Not engRange Is Nothing Then
+        Dim cell As Range
+        For Each cell In engRange
+            If cell.Value <> "" Then
+                Me.ComboEng.AddItem cell.Value
+            End If
+        Next cell
+    End If
+End Sub
+
+Private Sub ComboMonth_Change()
+    Call UpdateWeekDropdown
+End Sub
+
+Private Sub UpdateWeekDropdown()
+    If Me.ComboMonth.Value = "" Then Exit Sub
+
+    Me.ComboWeek.Clear
+
+    Dim selectedMonth As String
+    Dim selectedYear As Integer
+    Dim firstDayOfMonth As Date
+    Dim lastDayOfMonth As Date
+    Dim currentDate As Date
+    Dim weekString As String
+
+    selectedMonth = Me.ComboMonth.Value
+    selectedYear = Year(Date)
+
+    firstDayOfMonth = DateSerial(selectedYear, Month(selectedMonth & " 1"), 1)
+    lastDayOfMonth = DateSerial(selectedYear, Month(selectedMonth & " 1") + 1, 0)
+
+    currentDate = firstDayOfMonth
+    Do While currentDate <= lastDayOfMonth
+        If Weekday(currentDate, vbMonday) = 1 Then
+            weekString = "Week starting " & Format(currentDate, "mmmm d yyyy")
+            Me.ComboWeek.AddItem weekString
+        End If
+        currentDate = currentDate + 1
+    Loop
+End Sub
+
+Private Sub SetupListView()
+    With Me.ListViewRecord
+        .View = lvwReport
+        .FullRowSelect = True
+        .Gridlines = True
+        .HideSelection = False
+        .LabelWrap = False
+        .MultiSelect = False
+
+        ' Clear existing headers
+        .ColumnHeaders.Clear
+
+        ' Add column headers (18 columns total)
+        .ColumnHeaders.Add , , "Unique Code", 80
+        .ColumnHeaders.Add , , "Enterprise ID", 100
+        .ColumnHeaders.Add , , "Employee Name", 150
+        .ColumnHeaders.Add , , "Employee Email", 120
+        .ColumnHeaders.Add , , "Date Time", 140
+        .ColumnHeaders.Add , , "Type", 120
+        .ColumnHeaders.Add , , "Month", 80
+        .ColumnHeaders.Add , , "Week", 180
+        .ColumnHeaders.Add , , "Team Name", 120
+        .ColumnHeaders.Add , , "Region", 80
+        .ColumnHeaders.Add , , "Audit Engagement", 120
+        .ColumnHeaders.Add , , "Engagement Activity", 130
+        .ColumnHeaders.Add , , "Engagement Hr", 110
+        .ColumnHeaders.Add , , "Remark 1", 100
+        .ColumnHeaders.Add , , "Non-Audit Eng", 120
+        .ColumnHeaders.Add , , "Non-Audit Hr", 90
+        .ColumnHeaders.Add , , "Remark 2", 100
+        .ColumnHeaders.Add , , "Submitted By", 120
+    End With
+End Sub
+
+Private Sub LoadAllUserRecords()
+    On Error GoTo ErrorHandler
+
+    If currentUserID = "" Then
+        MsgBox "Enterprise ID not available. Please ensure you're logged in properly.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Clear ListView
+    Me.ListViewRecord.ListItems.Clear
+
+    Dim recordCount As Long
+    recordCount = 0
+
+    ' Load records from Database first
+    recordCount = recordCount + LoadRecordsFromDatabase()
+
+    ' Load records from Local storage
+    recordCount = recordCount + LoadRecordsFromLocal()
+    
+    If recordCount > 0 Then
+        Me.Caption = "Timesheet Data Entry - " & recordCount & " Record(s) Found"
+    Else
+        Me.Caption = "Timesheet Data Entry - No Records Found"
+    End If
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error loading records: " & Err.Description, vbCritical
+End Sub
+
+Private Function LoadRecordsFromDatabase() As Long
+    On Error Resume Next
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim recordCount As Long
+    Dim col As Integer
+
+    recordCount = 0
+    lastRow = wsDB.Cells(wsDB.Rows.count, 1).End(xlUp).Row
+
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 2).Value = currentUserID Then
+            Dim listItem As listItem
+            Set listItem = Me.ListViewRecord.ListItems.Add(, , wsDB.Cells(r, 1).Value)
+            listItem.Key = "DB_" & r
+
+            ' Add subitems for remaining 17 columns
+            For col = 2 To 18
+                listItem.SubItems(col - 1) = CStr(wsDB.Cells(r, col).Value)
+            Next col
+
+            recordCount = recordCount + 1
+        End If
+    Next r
+
+    LoadRecordsFromDatabase = recordCount
+End Function
+
+Private Function LoadRecordsFromLocal() As Long
+    On Error Resume Next
+    Dim wsUser As Worksheet
+    Set wsUser = ActiveSheet
+
+    Dim r As Long
+    Dim recordCount As Long
+    Dim col As Integer
+
+    recordCount = 0
+
+    ' Check within fixed range (3000-3200)
+    For r = 3000 To 3200
+        If wsUser.Cells(r, 3).Value = currentUserID And wsUser.Cells(r, 20).Value <> "Marked for Deletion" Then
+            Dim listItem As listItem
+            Set listItem = Me.ListViewRecord.ListItems.Add(, , wsUser.Cells(r, 2).Value)
+            listItem.Key = "LOCAL_" & r
+
+            ' Add subitems for columns 3 to 19 (17 columns total)
+            For col = 3 To 19
+                listItem.SubItems(col - 2) = CStr(wsUser.Cells(r, col).Value)
+            Next col
+
+            recordCount = recordCount + 1
+        End If
+    Next r
+
+    LoadRecordsFromLocal = recordCount
+End Function
+
+Private Sub ListViewRecord_DblClick()
+    If Me.ListViewRecord.selectedItem Is Nothing Then Exit Sub
+
+    Dim selectedItem As listItem
+    Set selectedItem = Me.ListViewRecord.selectedItem
+
+    ' Extract source and row number from key
+    Dim keyParts As Variant
+    keyParts = Split(selectedItem.Key, "_")
+    
+    If UBound(keyParts) < 1 Then
+        MsgBox "Invalid record key.", vbExclamation
+        Exit Sub
+    End If
+    
+    correctionSource = keyParts(0)
+    correctionRowNumber = CLng(keyParts(1))
+
+    ' Load record for correction
+    If LoadRecordFromListView(selectedItem) Then
+        isCorrection = True
+        Me.Caption = "Timesheet Data Entry - CORRECTION MODE (" & correctionSource & ")"
+        MsgBox "Record loaded for correction. Modify fields as needed and click 'Correct Record'.", vbInformation
+        Me.ComboMonth.SetFocus
+    Else
+        MsgBox "Error loading record for correction.", vbExclamation
+    End If
+End Sub
+
+Private Function LoadRecordFromListView(selectedItem As listItem) As Boolean
+    On Error GoTo ErrorHandler
+
+    LoadRecordFromListView = False
+
+    ' Clear form first
+    Call ClearForm(True)
+
+    ' Load values from ListView (adjusting for 0-based index)
+    If selectedItem.ListSubItems.count >= 3 Then
+        Me.TextboxEmpname.Value = selectedItem.SubItems(2)  ' Employee Name (3rd column, index 2)
+    End If
+    
+    ' Load editable fields
+    If selectedItem.ListSubItems.count >= 7 Then
+        Me.ComboMonth.Value = selectedItem.SubItems(6)      ' Month (7th column, index 6)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 8 Then
+        Me.ComboWeek.Value = selectedItem.SubItems(7)       ' Week (8th column, index 7)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 9 Then
+        Me.ComboTeam.Value = selectedItem.SubItems(8)       ' Team Name (9th column, index 8)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 10 Then
+        Me.ComboRegion.Value = selectedItem.SubItems(9)     ' Region (10th column, index 9)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 11 Then
+        Me.ComboEng.Value = selectedItem.SubItems(10)       ' Audit Engagement (11th column, index 10)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 12 Then
+        Me.ComboActi.Value = selectedItem.SubItems(11)      ' Engagement Activity (12th column, index 11)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 13 Then
+        Me.TextBoxHour1.Value = selectedItem.SubItems(12)   ' Engagement Hr (13th column, index 12)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 14 Then
+        Me.TextBoxR1.Value = selectedItem.SubItems(13)      ' Remark 1 (14th column, index 13)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 15 Then
+        Me.ComboNE.Value = selectedItem.SubItems(14)        ' Non-Audit Eng (15th column, index 14)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 16 Then
+        Me.TextBoxH2.Value = selectedItem.SubItems(15)      ' Non-Audit Hr (16th column, index 15)
+    End If
+    
+    If selectedItem.ListSubItems.count >= 17 Then
+        Me.TextBoxR2.Value = selectedItem.SubItems(16)      ' Remark 2 (17th column, index 16)
+    End If
+
+    LoadRecordFromListView = True
+    Exit Function
+
+ErrorHandler:
+    MsgBox "Error in LoadRecordFromListView: " & Err.Description, vbCritical
+    LoadRecordFromListView = False
+End Function
+
+Private Sub Commandfilter_Click()
+    Call FilterRecords
+End Sub
+
+Private Sub FilterRecords()
+    On Error GoTo ErrorHandler
+
+    If currentUserID = "" Then
+        MsgBox "Enterprise ID not available.", vbExclamation
+        Exit Sub
+    End If
+
+    ' Clear ListView
+    Me.ListViewRecord.ListItems.Clear
+
+    Dim recordCount As Long
+    recordCount = 0
+
+    ' Filter records from Database
+    recordCount = recordCount + FilterRecordsFromDatabase()
+
+    ' Filter records from Local storage
+    recordCount = recordCount + FilterRecordsFromLocal()
+
+    If recordCount > 0 Then
+        Me.Caption = "Timesheet Data Entry - " & recordCount & " Record(s) Found"
+    Else
+        Me.Caption = "Timesheet Data Entry - No Records Found"
+    End If
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error filtering records: " & Err.Description, vbCritical
+End Sub
+
+Private Function FilterRecordsFromDatabase() As Long
+    On Error Resume Next
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim recordCount As Long
+    Dim includeRecord As Boolean
+    Dim col As Integer
+
+    recordCount = 0
+    lastRow = wsDB.Cells(wsDB.Rows.count, 1).End(xlUp).Row
+
+    For r = 2 To lastRow
+        If wsDB.Cells(r, 2).Value = currentUserID Then
+            includeRecord = True
+
+            ' Apply filters based on form selections
+            If Me.ComboMonth.Value <> "" And wsDB.Cells(r, 7).Value <> Me.ComboMonth.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboWeek.Value <> "" And wsDB.Cells(r, 8).Value <> Me.ComboWeek.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboRegion.Value <> "" And wsDB.Cells(r, 10).Value <> Me.ComboRegion.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboTeam.Value <> "" And wsDB.Cells(r, 9).Value <> Me.ComboTeam.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboEng.Value <> "" And wsDB.Cells(r, 11).Value <> Me.ComboEng.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboActi.Value <> "" And wsDB.Cells(r, 12).Value <> Me.ComboActi.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboNE.Value <> "" And wsDB.Cells(r, 15).Value <> Me.ComboNE.Value Then
+                includeRecord = False
+            End If
+            If Me.TextboxEmpname.Value <> "" And wsDB.Cells(r, 3).Value <> Me.TextboxEmpname.Value Then
+                includeRecord = False
+            End If
+
+            If includeRecord Then
+                Dim listItem As listItem
+                Set listItem = Me.ListViewRecord.ListItems.Add(, , wsDB.Cells(r, 1).Value)
+                listItem.Key = "DB_" & r
+
+                For col = 2 To 18
+                    listItem.SubItems(col - 1) = CStr(wsDB.Cells(r, col).Value)
+                Next col
+
+                recordCount = recordCount + 1
+            End If
+        End If
+    Next r
+
+    FilterRecordsFromDatabase = recordCount
+End Function
+
+Private Function FilterRecordsFromLocal() As Long
+    On Error Resume Next
+    Dim wsUser As Worksheet
+    Set wsUser = ActiveSheet
+
+    Dim r As Long
+    Dim recordCount As Long
+    Dim includeRecord As Boolean
+    Dim col As Integer
+
+    recordCount = 0
+
+    ' Check within fixed range (3000-3200)
+    For r = 3000 To 3200
+        If wsUser.Cells(r, 3).Value = currentUserID And wsUser.Cells(r, 20).Value <> "Marked for Deletion" Then
+            includeRecord = True
+
+            ' Apply filters based on form selections
+            If Me.ComboMonth.Value <> "" And wsUser.Cells(r, 8).Value <> Me.ComboMonth.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboWeek.Value <> "" And wsUser.Cells(r, 9).Value <> Me.ComboWeek.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboRegion.Value <> "" And wsUser.Cells(r, 11).Value <> Me.ComboRegion.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboTeam.Value <> "" And wsUser.Cells(r, 10).Value <> Me.ComboTeam.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboEng.Value <> "" And wsUser.Cells(r, 12).Value <> Me.ComboEng.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboActi.Value <> "" And wsUser.Cells(r, 13).Value <> Me.ComboActi.Value Then
+                includeRecord = False
+            End If
+            If Me.ComboNE.Value <> "" And wsUser.Cells(r, 16).Value <> Me.ComboNE.Value Then
+                includeRecord = False
+            End If
+            If Me.TextboxEmpname.Value <> "" And wsUser.Cells(r, 4).Value <> Me.TextboxEmpname.Value Then
+                includeRecord = False
+            End If
+
+            If includeRecord Then
+                Dim listItem As listItem
+                Set listItem = Me.ListViewRecord.ListItems.Add(, , wsUser.Cells(r, 2).Value)
+                listItem.Key = "LOCAL_" & r
+
+                For col = 3 To 19
+                    listItem.SubItems(col - 2) = CStr(wsUser.Cells(r, col).Value)
+                Next col
+
+                recordCount = recordCount + 1
+            End If
+        End If
+    Next r
+
+    FilterRecordsFromLocal = recordCount
+End Function
+
+Private Sub Commandcorrec_Click()
+    If Not isCorrection Then
+        MsgBox "Please select a record to correct by double-clicking it in the list.", vbExclamation
+        Exit Sub
+    End If
+
+    If ValidateForm() Then
+        Call SaveCorrectedRecord
+        isCorrection = False
+        correctionSource = ""
+        correctionRowNumber = 0
+        Me.Caption = "Timesheet Data Entry"
+        Call ClearForm(False)
+        Call LoadAllUserRecords
+        Me.ComboMonth.SetFocus
+    End If
+End Sub
+
+Private Function ValidateForm() As Boolean
+    ValidateForm = True
+
+    If Me.ComboMonth.Value = "" Then
+        MsgBox "Please select Month.", vbExclamation
+        ValidateForm = False
+        Exit Function
+    End If
+    
+    If Me.ComboWeek.Value = "" Then
+        MsgBox "Please select Week.", vbExclamation
+        ValidateForm = False
+        Exit Function
+    End If
+    
+    If Me.ComboTeam.Value = "" Then
+        MsgBox "Please select Team.", vbExclamation
+        ValidateForm = False
+        Exit Function
+    End If
+
+    ' Check if at least one engagement is filled
+    Dim eng1Filled As Boolean
+    Dim eng2Filled As Boolean
+
+    eng1Filled = (Me.ComboEng.Value <> "" And Me.TextBoxHour1.Value <> "")
+    eng2Filled = (Me.ComboNE.Value <> "" And Me.TextBoxH2.Value <> "")
+
+    If Not (eng1Filled Or eng2Filled) Then
+        MsgBox "Please fill at least one engagement section.", vbExclamation
+        ValidateForm = False
+        Exit Function
+    End If
+
+    ' Validate engagement section if filled
+    If eng1Filled Then
+        If Me.ComboActi.Value = "" Then
+            MsgBox "Please select Engagement Activity.", vbExclamation
+            ValidateForm = False
+            Exit Function
+        End If
+        If Me.ComboRegion.Value = "" Then
+            MsgBox "Please select Region.", vbExclamation
+            ValidateForm = False
+            Exit Function
+        End If
+    End If
+End Function
+
+Private Sub SaveCorrectedRecord()
+    On Error GoTo ErrorHandler
+
+    Application.EnableEvents = False
+
+    ' Update the existing record in place
+    If correctionSource = "DB" Then
+        Call UpdateDatabaseRecord
+    Else
+        Call UpdateLocalRecord
+    End If
+
+    Application.EnableEvents = True
+
+    ThisWorkbook.Save
+
+    MsgBox "SUCCESS! CORRECTION completed!", vbInformation, "Correction Complete"
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "Error saving correction: " & Err.Description, vbCritical
+    On Error Resume Next
+    Application.EnableEvents = True
+End Sub
+
+Private Sub UpdateDatabaseRecord()
+    Dim wsDB As Worksheet
+    Set wsDB = ThisWorkbook.Sheets("Data base")
+
+    wsDB.Unprotect
+
+    With wsDB
+        ' Mark old record for deletion
+        .Cells(correctionRowNumber, 20).Value = "Marked for Deletion"
+        
+        ' Add new record with corrections
+        Dim nextRow As Long
+        nextRow = .Cells(.Rows.count, 1).End(xlUp).Row + 1
+        
+        .Cells(nextRow, 1).Value = .Cells(correctionRowNumber, 1).Value  ' Same Unique Code
+        .Cells(nextRow, 2).Value = currentUserID                         ' Enterprise ID
+        .Cells(nextRow, 3).Value = Me.TextboxEmpname.Value               ' Employee Name
+        .Cells(nextRow, 4).Value = ""                                    ' Email (not in form)
+        .Cells(nextRow, 5).Value = Format(Now, "yyyy-mm-dd hh:mm:ss")    ' Date Time
+        .Cells(nextRow, 6).Value = "Timesheet Correction"                ' Type
+        .Cells(nextRow, 7).Value = Me.ComboMonth.Value                   ' Month
+        .Cells(nextRow, 8).Value = Me.ComboWeek.Value                    ' Week
+        .Cells(nextRow, 9).Value = Me.ComboTeam.Value                    ' Team Name
+        .Cells(nextRow, 10).Value = Me.ComboRegion.Value                 ' Region
+        .Cells(nextRow, 11).Value = Me.ComboEng.Value                    ' Audit Engagement
+        .Cells(nextRow, 12).Value = Me.ComboActi.Value                   ' Engagement Activity
+        .Cells(nextRow, 13).Value = Me.TextBoxHour1.Value                ' Engagement Hr
+        .Cells(nextRow, 14).Value = Me.TextBoxR1.Value                   ' Remark 1
+        .Cells(nextRow, 15).Value = Me.ComboNE.Value                     ' Non-Audit Eng
+        .Cells(nextRow, 16).Value = Me.TextBoxH2.Value                   ' Non-Audit Hr
+        .Cells(nextRow, 17).Value = Me.TextBoxR2.Value                   ' Remark 2
+        .Cells(nextRow, 18).Value = Application.userName                 ' Submitted By
+    End With
+
+    wsDB.Protect UserInterfaceOnly:=True
+End Sub
+
+Private Sub UpdateLocalRecord()
+    Dim wsUser As Worksheet
+    Set wsUser = ActiveSheet
+
+    wsUser.Unprotect
+
+    With wsUser
+        ' Mark old record for deletion
+        .Cells(correctionRowNumber, 20).Value = "Marked for Deletion"
+        
+        ' Add new record with corrections in next available row
+        Dim nextRow As Long
+        For nextRow = 3000 To 3200
+            If .Cells(nextRow, 2).Value = "" Then
+                .Cells(nextRow, 2).Value = .Cells(correctionRowNumber, 2).Value  ' Same Unique Code
+                .Cells(nextRow, 3).Value = currentUserID                         ' Enterprise ID
+                .Cells(nextRow, 4).Value = Me.TextboxEmpname.Value               ' Employee Name
+                .Cells(nextRow, 5).Value = ""                                    ' Email (not in form)
+                .Cells(nextRow, 6).Value = Format(Now, "yyyy-mm-dd hh:mm:ss")    ' Date Time
+                .Cells(nextRow, 7).Value = "Timesheet Correction"                ' Type
+                .Cells(nextRow, 8).Value = Me.ComboMonth.Value                   ' Month
+                .Cells(nextRow, 9).Value = Me.ComboWeek.Value                    ' Week
+                .Cells(nextRow, 10).Value = Me.ComboTeam.Value                   ' Team Name
+                .Cells(nextRow, 11).Value = Me.ComboRegion.Value                 ' Region
+                .Cells(nextRow, 12).Value = Me.ComboEng.Value                    ' Audit Engagement
+                .Cells(nextRow, 13).Value = Me.ComboActi.Value                   ' Engagement Activity
+                .Cells(nextRow, 14).Value = Me.TextBoxHour1.Value                ' Engagement Hr
+                .Cells(nextRow, 15).Value = Me.TextBoxR1.Value                   ' Remark 1
+                .Cells(nextRow, 16).Value = Me.ComboNE.Value                     ' Non-Audit Eng
+                .Cells(nextRow, 17).Value = Me.TextBoxH2.Value                   ' Non-Audit Hr
+                .Cells(nextRow, 18).Value = Me.TextBoxR2.Value                   ' Remark 2
+                .Cells(nextRow, 19).Value = Application.userName                 ' Submitted By
+                
+                ' Set font color to white
+                .Range(.Cells(nextRow, 2), .Cells(nextRow, 19)).Font.Color = RGB(255, 255, 255)
+                Exit For
+            End If
+        Next nextRow
+    End With
+
+    wsUser.Protect UserInterfaceOnly:=True
+End Sub
+
+Private Sub ClearForm(clearAll As Boolean)
+    ' Clear these fields
+    Me.ComboEng.Value = ""
+    Me.ComboActi.Value = ""
+    Me.TextBoxHour1.Value = ""
+    Me.TextBoxR1.Value = ""
+    Me.ComboNE.Value = ""
+    Me.TextBoxH2.Value = ""
+    Me.TextBoxR2.Value = ""
+    Me.ComboRegion.Value = ""
+
+    If clearAll Then
+        Me.TextboxEmpname.Value = ""
+        Me.ComboMonth.Value = ""
+        Me.ComboWeek.Value = ""
+        Me.ComboTeam.Value = ""
+    End If
+
+    Me.ComboMonth.SetFocus
+End Sub
+
+Private Sub CommandClose_Click()
+    Unload Me
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    If CloseMode = vbFormControlMenu Then
+        Dim response As VbMsgBoxResult
+        response = MsgBox("Are you sure you want to close the correction form?", vbYesNo + vbQuestion, "Confirm Close")
+
+        If response = vbNo Then
+            Cancel = True
+        End If
+    End If
+End Sub
+  see when  click Commandfilter then it should  filter record on the basis of value selected   in   any of these TextboxEmpname
+ComboMonth
+ComboWeek
+ComboRegion
+ComboTeam
+ComboEng  ComboActi
+ComboNE
+  or all of them  in  this  ListViewRecord   so that user can see filtered record  in ListViewRecord  Improvise this code and give me complete code so that Commandfilter work and also in this above combobox can user select value instatly filter the record in  ListViewRecord based on the item changeed and if no value okay give me complete revised code
